@@ -1,0 +1,266 @@
+openapi: 3.0.3
+info:
+  title: QUICKPATCH — Identity API
+  version: 1.0.0
+  description: |
+    Contrato REST de Identity Service (DD, sección 8.1): registro de clientes, inicio de sesión y
+    perfil del usuario autenticado.
+
+    - **Proveedor:** Identity Service.
+    - **Consumidores:** app móvil Flutter, panel Angular y API Gateway.
+    - **Tenant:** en el registro y el login se resuelve a partir del canal por el que llega la petición
+      (RN-U5, DD 10.3), nunca de un campo del cuerpo. En el MVP opera un solo tenant por canal.
+    - **Token:** JWT firmado con RS256 por Identity. Claims: `sub` (id del usuario), `tenant_id`, `role`,
+      `iss`, `aud`, `exp`. Los demás servicios lo validan con la llave pública de Identity.
+    - Los errores se devuelven como `application/problem+json` (RFC 9457).
+  contact:
+    name: Equipo QUICKPATCH
+    url: https://github.com/ARQUI-202630/quickpatch
+servers:
+  - url: https://quickpatch.internal
+    description: Producción, detrás del API Gateway (VM1)
+  - url: https://qa.quickpatch.internal
+    description: Ambiente de QA (VM2, ADR-015)
+tags:
+  - name: auth
+    description: Registro e inicio de sesión.
+  - name: users
+    description: Perfil del usuario autenticado.
+paths:
+  /v1/auth/register/client:
+    post:
+      tags: [auth]
+      operationId: registerClient
+      summary: Registrar un cliente
+      description: |
+        Crea un usuario con rol `cliente` en el tenant del canal (RF-01). El correo es único dentro del
+        tenant (RN-U1) y la contraseña se guarda con un hash BCrypt (RN-U2, RNF-03). No inicia sesión.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterClientRequest'
+      responses:
+        '201':
+          description: Cliente registrado.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: El correo ya está registrado en el tenant (`problems/correo-registrado`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /v1/auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Iniciar sesión
+      description: |
+        Verifica el correo y la contraseña en el tenant del canal (RF-03). Tras 5 intentos fallidos
+        consecutivos la cuenta queda bloqueada 15 minutos (RN-U4, AC6-E8): el quinto fallo y cualquier
+        intento durante el bloqueo responden `423`. Un usuario de un tenant inactivo recibe `403` (RN-T1).
+        Correo inexistente y contraseña incorrecta responden igual (`401`), para no revelar qué correos existen.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Sesión iniciada.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          description: Credenciales inválidas (`problems/credenciales-invalidas`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: El tenant del usuario está inactivo (`problems/tenant-inactivo`, detalle `tenant is disabled`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '423':
+          description: Cuenta bloqueada temporalmente (`problems/cuenta-bloqueada`).
+          headers:
+            Retry-After:
+              description: Segundos que faltan para que termine el bloqueo.
+              schema:
+                type: integer
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /v1/users/me:
+    get:
+      tags: [users]
+      operationId: getCurrentUser
+      summary: Consultar el perfil propio
+      description: Devuelve el perfil del usuario del token, para cualquier rol.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Perfil del usuario autenticado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '401':
+          description: Falta el JWT o es inválido o expiró.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT RS256 emitido por este servicio con los claims `sub`, `tenant_id` y `role`.
+  parameters:
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Identificador de correlación. Si no llega, el servicio genera uno y lo devuelve.
+      schema:
+        type: string
+        format: uuid
+  headers:
+    CorrelationId:
+      description: Identificador de correlación de la petición.
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    Role:
+      type: string
+      description: Rol del usuario (DD, sección 5.2).
+      enum: [cliente, tecnico, proveedor, empresa_contacto, admin_tenant, admin_plataforma]
+    RegisterClientRequest:
+      type: object
+      required: [email, password, fullName]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 150
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+        fullName:
+          type: string
+          minLength: 2
+          maxLength: 150
+        phone:
+          type: string
+          maxLength: 30
+          nullable: true
+    LoginRequest:
+      type: object
+      required: [email, password]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 150
+        password:
+          type: string
+          format: password
+          maxLength: 128
+    LoginResponse:
+      type: object
+      required: [accessToken, tokenType, expiresIn, user]
+      properties:
+        accessToken:
+          type: string
+          description: JWT RS256.
+        tokenType:
+          type: string
+          enum: [Bearer]
+        expiresIn:
+          type: integer
+          description: Segundos de vigencia del token.
+        user:
+          $ref: '#/components/schemas/UserProfile'
+    UserProfile:
+      type: object
+      required: [id, email, fullName, role]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        fullName:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+        phone:
+          type: string
+          nullable: true
+    Problem:
+      type: object
+      description: Detalle de error según RFC 9457.
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+        title:
+          type: string
+        status:
+          type: integer
+          format: int32
+        detail:
+          type: string
+        correlationId:
+          type: string
+          format: uuid
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+  responses:
+    ValidationError:
+      description: Datos de entrada inválidos (`problems/validacion`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
