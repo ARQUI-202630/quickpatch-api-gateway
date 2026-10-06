@@ -1,0 +1,98 @@
+openapi: 3.0.3
+info:
+  title: QUICKPATCH — Catalog API
+  version: 1.0.0
+  description: |
+    Contrato REST de Catalog Service (DD, sección 8.1).
+
+    - **Proveedor:** Catalog Service.
+    - **Consumidores:** app móvil Flutter (selección de categoría al crear una solicitud) y panel Angular.
+    - El tenant se toma del claim `tenant_id` del JWT: cada tenant ve solo su catálogo (DD, sección 5.4).
+    - Los errores se devuelven como `application/problem+json` (RFC 9457).
+  contact:
+    name: Equipo QUICKPATCH
+    url: https://github.com/ARQUI-202630/quickpatch
+servers:
+  - url: https://quickpatch.internal
+    description: Producción, detrás del API Gateway (VM1)
+  - url: https://qa.quickpatch.internal
+    description: Ambiente de QA (VM2, ADR-015)
+tags:
+  - name: categories
+    description: Categorías de servicio del tenant.
+security:
+  - bearerAuth: []
+paths:
+  /v1/catalog/categories:
+    get:
+      tags: [categories]
+      operationId: listCategories
+      summary: Listar las categorías activas del tenant
+      description: Devuelve las categorías con `active = true` del tenant del usuario autenticado, ordenadas por nombre.
+      parameters:
+        - name: X-Correlation-Id
+          in: header
+          required: false
+          description: Identificador de correlación. Si no llega, el servicio genera uno y lo devuelve.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Categorías activas del tenant.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Category'
+              example:
+                - id: 3f1c2a4e-8d7b-4c1a-9e2f-5b6a7c8d9e01
+                  name: Plomería
+                  description: Fugas, tuberías y grifería.
+        '401':
+          description: Falta el JWT o es inválido o expiró.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT emitido por Identity Service con los claims `sub`, `tenant_id` y `role`.
+  schemas:
+    Category:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 255
+          nullable: true
+    Problem:
+      type: object
+      description: Detalle de error según RFC 9457.
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+        title:
+          type: string
+        status:
+          type: integer
+          format: int32
+        detail:
+          type: string
+        correlationId:
+          type: string
+          format: uuid

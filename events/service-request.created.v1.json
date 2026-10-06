@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://quickpatch.internal/contracts/events/service-request.created.v1.json",
+  "title": "service-request.created v1",
+  "description": "Una solicitud de servicio se creó en estado buscando_tecnico. Productor: ServiceRequest Service. Consumidores: Matching Service (inicia el matching) y Communication Service (confirma al cliente). Topic: service-request.created; clave del mensaje: data.serviceRequestId. Se publica mediante Outbox (ADR-007); los consumidores son idempotentes por eventId (processed_events).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["eventId", "eventType", "eventVersion", "occurredAt", "correlationId", "tenantId", "producer", "data"],
+  "properties": {
+    "eventId": { "type": "string", "format": "uuid", "description": "Id del registro en outbox_events; clave de idempotencia." },
+    "eventType": { "const": "service-request.created" },
+    "eventVersion": { "const": 1 },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "correlationId": { "type": "string", "format": "uuid" },
+    "tenantId": { "type": "string", "format": "uuid" },
+    "producer": { "const": "service-request-service" },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["serviceRequestId", "clientId", "categoryId", "description", "location", "createdAt"],
+      "properties": {
+        "serviceRequestId": { "type": "string", "format": "uuid" },
+        "clientId": { "type": "string", "format": "uuid", "description": "Usuario que creó la solicitud (claim sub)." },
+        "categoryId": { "type": "string", "format": "uuid" },
+        "description": { "type": "string", "minLength": 10, "maxLength": 1000, "description": "Servicio solicitado; Matching lo incluye en la oferta al técnico." },
+        "location": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["latitude", "longitude"],
+          "properties": {
+            "latitude": { "type": "number", "minimum": -90, "maximum": 90 },
+            "longitude": { "type": "number", "minimum": -180, "maximum": 180 }
+          }
+        },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}
