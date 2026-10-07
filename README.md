@@ -32,7 +32,7 @@ nginx/     Configuración del gateway: rutas /api/<servicio> → servicio en k3s
 |---|---|---|---|---|
 |ServiceRequest|1.0.0|ServiceRequest|Mobile (cliente)|[service-request.v1.yaml](openapi/service-request.v1.yaml)|
 |Catalog|1.1.0|Catalog|Mobile, panel Angular|[catalog.v1.yaml](openapi/catalog.v1.yaml)|
-|Identity|1.1.0|Identity|Mobile, panel Angular|[identity.v1.yaml](openapi/identity.v1.yaml)|
+|Identity|1.2.0|Identity|Mobile, panel Angular|[identity.v1.yaml](openapi/identity.v1.yaml)|
 
 ## Historia
 
