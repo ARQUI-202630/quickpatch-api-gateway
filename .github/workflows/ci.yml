@@ -1,5 +1,8 @@
-# CI de quickpatch-contracts. Copiar en el repo como .github/workflows/ci.yml.
-# Valida los contratos en cada PR y push, y la forma de los tags de versión (vMAJOR.MINOR.PATCH).
+# CI de quickpatch-api-gateway: autocontenido, sin workflows de otros repositorios (SCRUM-337).
+#   CTR-001 a CTR-003 → Spectral sobre openapi/
+#   breaking-openapi  → oasdiff contra la rama base: rechaza cambios incompatibles y contratos eliminados
+#   CTR-006           → los tags deben tener la forma vMAJOR.MINOR.PATCH
+#   nginx             → si existe nginx/*.conf, `nginx -t` valida la sintaxis
 name: CI
 
 on:
@@ -14,31 +17,115 @@ permissions:
 
 jobs:
   contratos:
-    uses: ARQUI-202630/quickpatch-infrastructure/.github/workflows/ci-contratos.yml@main
+    name: OpenAPI y versión
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag con versión semántica (CTR-006)
+        if: github.ref_type == 'tag'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::El tag '$TAG' no sigue vMAJOR.MINOR.PATCH (CTR-006)."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Spectral sobre openapi/ (CTR-001 a CTR-003)
+        run: |
+          [ -f .spectral.yaml ] || echo 'extends: ["spectral:oas"]' > .spectral.yaml
+          npx -y @stoplight/spectral-cli@6 lint "openapi/**/*.{yaml,yml}" --fail-severity error
 
   breaking-openapi:
+    name: breaking-openapi
     if: github.event_name == 'pull_request'
-    uses: ARQUI-202630/quickpatch-infrastructure/.github/workflows/breaking-openapi.yml@main
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+
+      - name: Instalar oasdiff
+        run: go install github.com/oasdiff/oasdiff@v1.30.0
+
+      - name: Comparar OpenAPI con la rama base
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          git fetch origin "$BASE"
+          deleted=$(git diff --name-only --diff-filter=D "origin/$BASE...HEAD" -- 'openapi/*.yaml' 'openapi/*.yml')
+          if [ -n "$deleted" ]; then
+            echo "::error::Se eliminaron contratos OpenAPI:"
+            echo "$deleted"
+            exit 1
+          fi
+          mapfile -t changed < <(git diff --name-only --diff-filter=ACMRT "origin/$BASE...HEAD" -- 'openapi/*.yaml' 'openapi/*.yml')
+          for f in "${changed[@]}"; do
+            [ -f "$f" ] || continue
+            if git cat-file -e "origin/$BASE:$f" 2>/dev/null; then
+              tmp=$(mktemp --suffix=.yaml)
+              git show "origin/$BASE:$f" > "$tmp"
+              echo "Comparando $f"
+              oasdiff breaking --fail-on ERR "$tmp" "$f"
+              rm -f "$tmp"
+            else
+              echo "Contrato nuevo: $f"
+            fi
+          done
+
+  nginx:
+    name: Configuración del gateway
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: nginx -t
+        run: |
+          shopt -s nullglob
+          confs=(nginx/*.conf)
+          if [ ${#confs[@]} -eq 0 ]; then
+            echo "::notice::Todavía no hay configuración en nginx/ (SCRUM-338)."
+            exit 0
+          fi
+          for c in "${confs[@]}"; do
+            docker run --rm -v "$PWD/$c:/etc/nginx/conf.d/default.conf:ro" nginx:1.27-alpine nginx -t
+          done
 
   dependency-review:
+    name: dependency-review
     if: github.event_name == 'pull_request'
-    uses: ARQUI-202630/quickpatch-infrastructure/.github/workflows/dependency-review.yml@main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
 
   quality-gate:
     name: quality-gate
     if: always()
-    needs: [contratos, breaking-openapi, dependency-review]
+    needs: [contratos, breaking-openapi, nginx, dependency-review]
     runs-on: ubuntu-latest
-
     steps:
       - name: Validar compuertas
         env:
           CONTRACT_RESULT: ${{ needs.contratos.result }}
           BREAK_RESULT: ${{ needs.breaking-openapi.result }}
+          NGINX_RESULT: ${{ needs.nginx.result }}
           DEP_RESULT: ${{ needs.dependency-review.result }}
         run: |
           test "$CONTRACT_RESULT" = "success"
-
-          test "$BREAK_RESULT" = "success" ||           test "$BREAK_RESULT" = "skipped"
-
-          test "$DEP_RESULT" = "success" ||           test "$DEP_RESULT" = "skipped"
+          test "$NGINX_RESULT" = "success"
+          test "$BREAK_RESULT" = "success" || test "$BREAK_RESULT" = "skipped"
+          test "$DEP_RESULT" = "success" || test "$DEP_RESULT" = "skipped"
