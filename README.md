@@ -19,5 +19,5 @@ Los contratos se modifican de forma explícita y el Pull Request debe identifica
 |API|Versión|Proveedor|Consumidores|Archivo|
 |---|---|---|---|---|
 |ServiceRequest|1.0.0|ServiceRequest|Mobile (cliente), API Gateway|[service-request.v1.yaml](openapi/service-request.v1.yaml)|
-|Catalog|1.0.0|Catalog|Mobile, panel Angular|[catalog.v1.yaml](openapi/catalog.v1.yaml)|
+|Catalog|1.1.0|Catalog|Mobile, panel Angular|[catalog.v1.yaml](openapi/catalog.v1.yaml)|
 |Identity|1.1.0|Identity|Mobile, panel Angular, API Gateway|[identity.v1.yaml](openapi/identity.v1.yaml)|
