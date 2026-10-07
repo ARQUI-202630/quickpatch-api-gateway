@@ -1,13 +1,16 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Identity API
-  version: 1.1.0
+  version: 1.2.0
   description: |
     Contrato REST de Identity Service (DD, sección 8.2.1): registro de clientes y de técnicos o
     proveedores, inicio de sesión y perfil del usuario autenticado.
 
     **1.1.0** (compatible): registro de técnico o proveedor, `verificationStatus` en el perfil y `403`
     por tenant inactivo en el registro.
+
+    **1.2.0** (compatible): gestión de tenants por el administrador de la plataforma (RF-21, DD 10.4,
+    SCRUM-112): listar los tenants y activarlos o desactivarlos.
 
     - **Proveedor:** Identity Service.
     - **Consumidores:** app móvil Flutter, panel Angular y API Gateway.
@@ -29,6 +32,8 @@ tags:
     description: Registro e inicio de sesión.
   - name: users
     description: Perfil del usuario autenticado.
+  - name: platform
+    description: Operaciones de plataforma, solo para `admin_plataforma` (DD 10.4).
 paths:
   /v1/auth/register/client:
     post:
@@ -183,6 +188,82 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /v1/platform/tenants:
+    get:
+      tags: [platform]
+      operationId: listTenants
+      summary: Listar los tenants de la plataforma
+      description: |
+        Devuelve todos los tenants, activos e inactivos, ordenados por nombre (RF-21). Solo
+        `admin_plataforma` (RN-U6); es una operación de plataforma que no está limitada al tenant del token
+        (DD 10.4).
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Tenants de la plataforma.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Tenant'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/platform/tenants/{id}:
+    patch:
+      tags: [platform]
+      operationId: updateTenantStatus
+      summary: Activar o desactivar un tenant
+      description: |
+        Cambia el estado del tenant (RF-21). Un tenant inactivo no puede registrar usuarios ni iniciar
+        sesión (RN-T1). La operación queda registrada en `audit_logs` (DD 10.4). El tenant del propio
+        administrador de la plataforma no se puede desactivar. Solo `admin_plataforma`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTenantStatusRequest'
+      responses:
+        '200':
+          description: Tenant con el estado nuevo. Repetir el mismo estado no es un error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: El tenant no existe (`problems/no-encontrado`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: Se intentó desactivar el tenant de la plataforma (`problems/tenant-plataforma`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
 components:
   securitySchemes:
     bearerAuth:
@@ -316,6 +397,33 @@ components:
           nullable: true
           enum: [pendiente, aprobado, rechazado, suspendido, null]
           description: Solo para `tecnico` y `proveedor` (DD 5.3); `null` en los demás roles.
+    TenantStatus:
+      type: string
+      description: Estado del tenant (DD, tabla `tenants`).
+      enum: [activo, inactivo]
+    Tenant:
+      type: object
+      required: [id, name, nit, status, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        nit:
+          type: string
+        status:
+          $ref: '#/components/schemas/TenantStatus'
+        createdAt:
+          type: string
+          format: date-time
+    UpdateTenantStatusRequest:
+      type: object
+      required: [status]
+      additionalProperties: false
+      properties:
+        status:
+          $ref: '#/components/schemas/TenantStatus'
     Problem:
       type: object
       description: Detalle de error según RFC 9457.
@@ -341,6 +449,18 @@ components:
             items:
               type: string
   responses:
+    Unauthenticated:
+      description: Falta el JWT o es inválido o expiró (`problems/no-autenticado`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: El rol del token no puede hacer esta operación (`problems/no-autorizado`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
     TenantDisabled:
       description: El tenant del canal está inactivo (`problems/tenant-inactivo`, detalle `tenant is disabled`).
       content:
