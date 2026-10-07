@@ -1,9 +1,12 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Catalog API
-  version: 1.0.0
+  version: 1.1.0
   description: |
-    Contrato REST de Catalog Service (DD, sección 8.1).
+    Contrato REST de Catalog Service (DD, sección 8.2.2).
+
+    **1.1.0** (compatible): administración de categorías por `admin_tenant`. Cada alta o cambio publica
+    `catalog.category-changed` mediante Outbox (ADR-007) para las réplicas de ServiceRequest y Matching.
 
     - **Proveedor:** Catalog Service.
     - **Consumidores:** app móvil Flutter (selección de categoría al crear una solicitud) y panel Angular.
@@ -56,6 +59,80 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /v1/catalog/admin/categories:
+    post:
+      tags: [categories]
+      operationId: createCategory
+      summary: Crear una categoría
+      description: Solo `admin_tenant`, en su propio tenant. El nombre es único dentro del tenant (DD 5.4).
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCategoryRequest'
+      responses:
+        '201':
+          description: Categoría creada y activa.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminCategory'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Ya existe una categoría con ese nombre en el tenant (`problems/categoria-registrada`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /v1/catalog/admin/categories/{id}:
+    patch:
+      tags: [categories]
+      operationId: updateCategory
+      summary: Cambiar la descripción o activar y desactivar una categoría
+      description: |
+        Solo `admin_tenant`. Una categoría desactivada deja de aceptarse en solicitudes nuevas (RN-SR10);
+        las solicitudes existentes no cambian. Una categoría de otro tenant responde `404`.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCategoryRequest'
+      responses:
+        '200':
+          description: Categoría actualizada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminCategory'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: La categoría no existe en el tenant (`problems/no-encontrado`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
 components:
   securitySchemes:
     bearerAuth:
@@ -63,7 +140,76 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: JWT emitido por Identity Service con los claims `sub`, `tenant_id` y `role`.
+  parameters:
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Identificador de correlación. Si no llega, el servicio genera uno y lo devuelve.
+      schema:
+        type: string
+        format: uuid
+  responses:
+    ValidationError:
+      description: Datos inválidos (`problems/validacion`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: Falta el JWT o es inválido o expiró (`problems/no-autenticado`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: El rol no es `admin_tenant` (`problems/no-autorizado`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
   schemas:
+    CreateCategoryRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 255
+          nullable: true
+    UpdateCategoryRequest:
+      type: object
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        description:
+          type: string
+          maxLength: 255
+          nullable: true
+        active:
+          type: boolean
+    AdminCategory:
+      type: object
+      required: [id, name, active, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        active:
+          type: boolean
+        updatedAt:
+          type: string
+          format: date-time
     Category:
       type: object
       required: [id, name]
@@ -96,3 +242,9 @@ components:
         correlationId:
           type: string
           format: uuid
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
