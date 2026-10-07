@@ -13,9 +13,9 @@ info:
     name: Equipo QUICKPATCH
     url: https://github.com/ARQUI-202630/quickpatch
 servers:
-  - url: https://quickpatch.internal
-    description: Producción, detrás del API Gateway (VM1)
-  - url: https://qa.quickpatch.internal
+  - url: https://quickpatch.internal/api
+    description: Producción, detrás del API Gateway (VM1), que quita el prefijo /api
+  - url: https://qa.quickpatch.internal/api
     description: Ambiente de QA (VM2, ADR-015)
 tags:
   - name: service-requests

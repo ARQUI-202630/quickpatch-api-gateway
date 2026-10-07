@@ -1,15 +1,18 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Identity API
-  version: 1.0.0
+  version: 1.1.0
   description: |
-    Contrato REST de Identity Service (DD, sección 8.1): registro de clientes, inicio de sesión y
-    perfil del usuario autenticado.
+    Contrato REST de Identity Service (DD, sección 8.2.1): registro de clientes y de técnicos o
+    proveedores, inicio de sesión y perfil del usuario autenticado.
+
+    **1.1.0** (compatible): registro de técnico o proveedor, `verificationStatus` en el perfil y `403`
+    por tenant inactivo en el registro.
 
     - **Proveedor:** Identity Service.
     - **Consumidores:** app móvil Flutter, panel Angular y API Gateway.
     - **Tenant:** en el registro y el login se resuelve a partir del canal por el que llega la petición
-      (RN-U5, DD 10.3), nunca de un campo del cuerpo. En el MVP opera un solo tenant por canal.
+      (RN-U5, DD 11.3), nunca de un campo del cuerpo. En el MVP opera un solo tenant por canal.
     - **Token:** JWT firmado con RS256 por Identity. Claims: `sub` (id del usuario), `tenant_id`, `role`,
       `iss`, `aud`, `exp`. Los demás servicios lo validan con la llave pública de Identity.
     - Los errores se devuelven como `application/problem+json` (RFC 9457).
@@ -17,9 +20,9 @@ info:
     name: Equipo QUICKPATCH
     url: https://github.com/ARQUI-202630/quickpatch
 servers:
-  - url: https://quickpatch.internal
-    description: Producción, detrás del API Gateway (VM1)
-  - url: https://qa.quickpatch.internal
+  - url: https://quickpatch.internal/api
+    description: Producción, detrás del API Gateway (VM1), que quita el prefijo /api
+  - url: https://qa.quickpatch.internal/api
     description: Ambiente de QA (VM2, ADR-015)
 tags:
   - name: auth
@@ -56,8 +59,49 @@ paths:
                 $ref: '#/components/schemas/UserProfile'
         '400':
           $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/TenantDisabled'
         '409':
           description: El correo ya está registrado en el tenant (`problems/correo-registrado`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /v1/auth/register/technician:
+    post:
+      tags: [auth]
+      operationId: registerTechnician
+      summary: Registrar un técnico o un proveedor
+      description: |
+        Crea un usuario con rol `tecnico` o `proveedor` en el tenant del canal y su perfil en estado
+        `pendiente` de verificación (RF-02, DD 5.3). Un administrador del tenant lo aprueba después (RF-19).
+        El documento de identidad es obligatorio y único dentro del tenant. `specialtyId` es una categoría
+        de servicio de Catalog (referencia lógica, propuesta P-03 del DD). No inicia sesión.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterTechnicianRequest'
+      responses:
+        '201':
+          description: Técnico o proveedor registrado, pendiente de verificación.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/TenantDisabled'
+        '409':
+          description: El correo (`problems/correo-registrado`) o el documento (`problems/documento-registrado`) ya están registrados en el tenant.
           content:
             application/problem+json:
               schema:
@@ -188,6 +232,40 @@ components:
           type: string
           maxLength: 30
           nullable: true
+    RegisterTechnicianRequest:
+      type: object
+      required: [email, password, fullName, phone, documentId, specialtyId, role]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 150
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+        fullName:
+          type: string
+          minLength: 2
+          maxLength: 150
+        phone:
+          type: string
+          minLength: 7
+          maxLength: 30
+        documentId:
+          type: string
+          minLength: 5
+          maxLength: 30
+          description: Documento de identidad; único dentro del tenant.
+        specialtyId:
+          type: string
+          format: uuid
+          description: Categoría de servicio que atiende (Catalog).
+        role:
+          type: string
+          enum: [tecnico, proveedor]
     LoginRequest:
       type: object
       required: [email, password]
@@ -233,6 +311,11 @@ components:
         phone:
           type: string
           nullable: true
+        verificationStatus:
+          type: string
+          nullable: true
+          enum: [pendiente, aprobado, rechazado, suspendido, null]
+          description: Solo para `tecnico` y `proveedor` (DD 5.3); `null` en los demás roles.
     Problem:
       type: object
       description: Detalle de error según RFC 9457.
@@ -258,6 +341,12 @@ components:
             items:
               type: string
   responses:
+    TenantDisabled:
+      description: El tenant del canal está inactivo (`problems/tenant-inactivo`, detalle `tenant is disabled`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
     ValidationError:
       description: Datos de entrada inválidos (`problems/validacion`).
       content:
