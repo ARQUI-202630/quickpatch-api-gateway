@@ -1,12 +1,16 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — ServiceRequest API
-  version: 1.0.0
+  version: 1.1.0
   description: |
     Contrato REST de ServiceRequest Service (DD, sección 8.1).
 
+    **1.1.0** (compatible): el técnico asignado consulta el detalle de la solicitud (RF-14, SCRUM-34,
+    DD V4 8.3.4) y la respuesta agrega los campos opcionales `assignedAt`, `technician` y `client`. No
+    cambia nada de lo que ya recibía el cliente.
+
     - **Proveedor:** ServiceRequest Service.
-    - **Consumidores:** app móvil Flutter (cliente) y API Gateway.
+    - **Consumidores:** app móvil Flutter (cliente y técnico) y API Gateway.
     - El tenant y el cliente se toman de los claims del JWT (`tenant_id`, `sub`); nunca del cuerpo de la petición.
     - Los errores se devuelven como `application/problem+json` (RFC 9457).
   contact:
@@ -78,8 +82,20 @@ paths:
       summary: Consultar una solicitud
       description: |
         Devuelve la solicitud si pertenece al tenant del usuario autenticado y el usuario es su
-        cliente. Una solicitud de otro tenant o de otro cliente responde `404`, para no revelar
-        su existencia.
+        cliente o su técnico asignado. Una solicitud de otro tenant, de otro cliente o asignada a otro
+        técnico responde `404`, para no revelar su existencia.
+
+        **Cliente dueño:** recibe la solicitud completa; `technician` aparece desde `asignado` y `client`
+        siempre es `null`.
+
+        **Técnico asignado** (1.1.0): solo mientras la solicitud está entre `asignado` y `completado`
+        (RN-SR13). Recibe la dirección, la ubicación y el bloque `client` con el nombre y el teléfono del
+        cliente. Antes de aceptar, el técnico solo ve la localidad y la distancia en la oferta (Matching).
+        Fuera de ese rango de estados responde `403`, para no entregar la dirección ni el contacto
+        (SCRUM-34, criterio 2).
+
+        Los nombres y el teléfono se obtienen de Identity; si Identity no responde, `technician` y `client`
+        llegan con `fullName` y `phone` en `null`.
       parameters:
         - $ref: '#/components/parameters/CorrelationId'
         - name: id
@@ -102,7 +118,13 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          description: |
+            El rol no puede consultar solicitudes, o el técnico asignado la consulta fuera del rango
+            `asignado`–`completado` (`problems/no-autorizado`, RN-SR13).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
         '404':
           $ref: '#/components/responses/NotFound'
 components:
@@ -207,6 +229,44 @@ components:
         createdAt:
           type: string
           format: date-time
+        assignedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Momento en que un técnico aceptó la oferta (`matching.technician-assigned`); `null` antes. Desde 1.1.0.
+        technician:
+          allOf:
+            - $ref: '#/components/schemas/AssignedTechnician'
+          nullable: true
+          description: Técnico asignado; `null` mientras no haya asignación. Desde 1.1.0.
+        client:
+          allOf:
+            - $ref: '#/components/schemas/RequestClient'
+          nullable: true
+          description: Contacto del cliente; solo para el técnico asignado entre `asignado` y `completado` (RN-SR13), `null` para el cliente. Desde 1.1.0.
+    AssignedTechnician:
+      type: object
+      required: [id, fullName]
+      properties:
+        id:
+          type: string
+          format: uuid
+        fullName:
+          type: string
+          nullable: true
+    RequestClient:
+      type: object
+      required: [id, fullName, phone]
+      properties:
+        id:
+          type: string
+          format: uuid
+        fullName:
+          type: string
+          nullable: true
+        phone:
+          type: string
+          nullable: true
     Problem:
       type: object
       description: Detalle de error según RFC 9457.
