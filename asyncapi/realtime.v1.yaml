@@ -131,6 +131,7 @@ components:
 
         |Evento|`status`|Destinatarios|
         |---|---|---|
+        |`service-request.created`|`buscando_tecnico`|Cliente|
         |`matching.technician-assigned`|`asignado`|Cliente y técnico asignado|
         |`matching.no-technician-available`|`en_espera`|Cliente|
         |`matching.search-resumed`|`buscando_tecnico`|Cliente|
