@@ -31,7 +31,7 @@ nginx/     Configuración de Nginx del gateway (VM1) para producción, QA y Graf
 |API|Versión|Proveedor|Consumidores|Archivo|
 |---|---|---|---|---|
 |ServiceRequest|1.0.0|ServiceRequest|Mobile (cliente)|[service-request.v1.yaml](openapi/service-request.v1.yaml)|
-|Catalog|1.1.0|Catalog|Mobile, panel Angular|[catalog.v1.yaml](openapi/catalog.v1.yaml)|
+|Catalog|1.2.0|Catalog|Mobile, panel Angular|[catalog.v1.yaml](openapi/catalog.v1.yaml)|
 |Identity|1.2.0|Identity|Mobile, panel Angular|[identity.v1.yaml](openapi/identity.v1.yaml)|
 
 ## Historia
