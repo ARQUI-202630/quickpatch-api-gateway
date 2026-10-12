@@ -1,16 +1,22 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Catalog API
-  version: 1.1.0
+  version: 1.2.0
   description: |
     Contrato REST de Catalog Service (DD, sección 8.2.2).
+
+    **1.2.0** (compatible): `GET /v1/catalog/categories` también responde sin token, con `X-Channel-Id`,
+    para que la app muestre las especialidades en el registro de técnicos (RF-02, DD 8.2.1). Sin token el
+    tenant es el del canal, igual que en el registro y el login de Identity (RN-U5).
 
     **1.1.0** (compatible): administración de categorías por `admin_tenant`. Cada alta o cambio publica
     `catalog.category-changed` mediante Outbox (ADR-007) para las réplicas de ServiceRequest y Matching.
 
     - **Proveedor:** Catalog Service.
     - **Consumidores:** app móvil Flutter (selección de categoría al crear una solicitud) y panel Angular.
-    - El tenant se toma del claim `tenant_id` del JWT: cada tenant ve solo su catálogo (DD, sección 5.4).
+    - El tenant se toma del claim `tenant_id` del JWT: cada tenant ve solo su catálogo (DD, sección 5.4). La
+      única excepción es la lista de categorías sin token, que usa el tenant del canal; nunca un dato del
+      cliente.
     - Los errores se devuelven como `application/problem+json` (RFC 9457).
   contact:
     name: Equipo QUICKPATCH
@@ -31,8 +37,20 @@ paths:
       tags: [categories]
       operationId: listCategories
       summary: Listar las categorías activas del tenant
-      description: Devuelve las categorías con `active = true` del tenant del usuario autenticado, ordenadas por nombre.
+      description: |
+        Devuelve las categorías con `active = true`, ordenadas por nombre. Con JWT, del tenant del token. Sin
+        token (registro de técnicos, RF-02), del tenant del canal: el servicio lo toma de su configuración y no
+        acepta ningún tenant en la petición. Solo se exponen `id`, `name` y `description`.
+      security:
+        - bearerAuth: []
+        - {}
       parameters:
+        - name: X-Channel-Id
+          in: header
+          required: false
+          description: Canal de la app (por ejemplo `quickpatch-mobile`). Lo envían las apps en las peticiones sin token.
+          schema:
+            type: string
         - name: X-Correlation-Id
           in: header
           required: false
@@ -54,7 +72,7 @@ paths:
                   name: Plomería
                   description: Fugas, tuberías y grifería.
         '401':
-          description: Falta el JWT o es inválido o expiró.
+          description: El JWT enviado es inválido o expiró. Sin JWT la petición no responde 401.
           content:
             application/problem+json:
               schema:
