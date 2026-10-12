@@ -8,7 +8,7 @@ Es uno de los 12 repositorios del multirepo (SCRUM-333). Los demás repositorios
 
 ```text
 openapi/   Contratos REST, uno por servicio y versión mayor (fuente de verdad)
-nginx/     Configuración de Nginx del gateway (VM1) para producción, QA y Grafana
+nginx/     Configuración de Nginx del gateway (VM1) para producción, QA y Grafana; sirve el panel Angular de cada ambiente
 ```
 
 ## Qué hace el gateway
