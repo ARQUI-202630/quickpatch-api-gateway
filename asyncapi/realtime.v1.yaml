@@ -1,0 +1,283 @@
+asyncapi: 3.0.0
+info:
+  title: QUICKPATCH — Canal de estado en tiempo real
+  version: 1.0.0
+  description: |
+    Contrato del WebSocket `/v1/realtime` (ADR-023; DD V4, sección 8.5). Las apps reciben un **aviso
+    corto** cada vez que cambia algo que les corresponde y piden el detalle por REST
+    (`GET /v1/service-requests/{id}`, `GET /v1/matching/offers`). El canal nunca lleva el detalle, para
+    no duplicar las reglas de visibilidad (RN-SR13) ni exponer datos.
+
+    - **Proveedor:** Communication Service, a partir de los eventos de Kafka que consume (DD 8.4).
+    - **Consumidores:** app móvil Flutter (cliente, `empresa_contacto` y técnico) y panel Angular
+      (`admin_tenant`).
+    - **Entrada:** `wss://<ambiente>/api/v1/realtime`. TLS termina en VM1 y el gateway quita `/api`
+      (ADR-022). La URL no lleva el token ni ningún dato del usuario.
+
+    **Ciclo de la conexión**
+
+    1. La app abre el WebSocket y, en los primeros **10 segundos**, envía una única trama `auth` con su
+       token de acceso. El token no viaja en la URL para que no quede en los logs del gateway.
+    2. Communication valida el JWT con la llave pública de Identity (RS256, ADR-018): firma, `iss`,
+       `aud` y `exp`. Toma el usuario de `sub`, el tenant de `tenant_id` y el rol de `role`. Nunca acepta
+       un usuario, tenant o rol enviado por la app (RN-U3).
+    3. Si todo es válido responde `auth.accepted` y desde ese momento envía los avisos del usuario.
+       Si no, cierra con el código que corresponda (ver `x-close-codes`).
+    4. Cuando el token vence, Communication cierra con `4004`; la app se reconecta con un token nuevo.
+
+    **Respaldo (ADR-023):** si el WebSocket no conecta o se cae, la app consulta el detalle cada
+    30 segundos y reintenta la conexión con espera creciente (1, 2, 4… hasta 60 segundos). Con eso
+    RNF-06 se cumple aunque el canal no esté disponible.
+
+    **Aislamiento:** un aviso solo se entrega a conexiones del mismo `tenant_id` que el evento de Kafka
+    que lo originó, y dentro del tenant solo a los usuarios a los que les corresponde (tabla de cada
+    mensaje). Los avisos pueden llegar repetidos o en desorden: la app siempre vuelve a pedir el
+    detalle, que es la fuente de verdad.
+
+    **Versionado:** agregar un tipo de aviso o un campo opcional es compatible (versión menor); la app
+    ignora los tipos que no conoce. Quitar o cambiar un campo exige `/v2/realtime`.
+  contact:
+    name: Equipo QUICKPATCH
+    url: https://github.com/ARQUI-202630/quickpatch
+defaultContentType: application/json
+servers:
+  produccion:
+    host: quickpatch.internal
+    pathname: /api
+    protocol: wss
+    description: Producción, detrás del gateway de VM1.
+  qa:
+    host: qa.quickpatch.internal
+    pathname: /api
+    protocol: wss
+    description: Ambiente de QA (ADR-015, ADR-022).
+channels:
+  realtime:
+    address: /v1/realtime
+    title: Canal de estado
+    description: Una conexión por sesión de la app. Mensajes JSON en tramas de texto.
+    servers:
+      - $ref: '#/servers/produccion'
+      - $ref: '#/servers/qa'
+    messages:
+      auth:
+        $ref: '#/components/messages/auth'
+      authAccepted:
+        $ref: '#/components/messages/authAccepted'
+      serviceRequestStatusChanged:
+        $ref: '#/components/messages/serviceRequestStatusChanged'
+      offerCreated:
+        $ref: '#/components/messages/offerCreated'
+      serviceRequestCountsChanged:
+        $ref: '#/components/messages/serviceRequestCountsChanged'
+    bindings:
+      ws:
+        method: GET
+        bindingVersion: 0.1.0
+operations:
+  recibirAutenticacion:
+    action: receive
+    channel:
+      $ref: '#/channels/realtime'
+    title: Primera trama con el token
+    summary: Communication recibe la única trama que envía la app.
+    description: |
+      La app envía `auth` una sola vez, en los primeros 10 segundos. Cualquier otra trama de la app
+      (antes o después) cierra la conexión con `4000`.
+    messages:
+      - $ref: '#/channels/realtime/messages/auth'
+  enviarAvisos:
+    action: send
+    channel:
+      $ref: '#/channels/realtime'
+    title: Avisos al usuario conectado
+    summary: Communication confirma la autenticación y envía los avisos que le corresponden al usuario.
+    messages:
+      - $ref: '#/channels/realtime/messages/authAccepted'
+      - $ref: '#/channels/realtime/messages/serviceRequestStatusChanged'
+      - $ref: '#/channels/realtime/messages/offerCreated'
+      - $ref: '#/channels/realtime/messages/serviceRequestCountsChanged'
+components:
+  messages:
+    auth:
+      name: auth
+      title: Autenticación (primera trama)
+      summary: Token de acceso del usuario. Máximo 8 KB.
+      payload:
+        $ref: '#/components/schemas/Auth'
+      examples:
+        - name: auth
+          payload:
+            type: auth
+            token: eyJhbGciOiJSUzI1NiIs...
+    authAccepted:
+      name: auth.accepted
+      title: Autenticación aceptada
+      summary: La conexión quedó registrada para el usuario y el tenant del token.
+      payload:
+        $ref: '#/components/schemas/AuthAccepted'
+      examples:
+        - name: authAccepted
+          payload:
+            type: auth.accepted
+            expiresAt: '2026-10-12T16:15:00Z'
+    serviceRequestStatusChanged:
+      name: service-request.status-changed
+      title: Cambió el estado de una solicitud
+      summary: La app vuelve a pedir `GET /v1/service-requests/{serviceRequestId}`.
+      description: |
+        Se envía al **cliente dueño** de la solicitud (`clientId` del evento) y, cuando hay uno, al
+        **técnico asignado** (`technicianId`). Origen en Kafka (DD 8.4):
+
+        |Evento|`status`|Destinatarios|
+        |---|---|---|
+        |`matching.technician-assigned`|`asignado`|Cliente y técnico asignado|
+        |`matching.no-technician-available`|`en_espera`|Cliente|
+        |`matching.search-resumed`|`buscando_tecnico`|Cliente|
+
+        Los demás eventos del ciclo de la solicitud (`service-request.quoted`, `.started`, `.completed`,
+        `.cancelled`, `payment.approved`, entre otros) se agregan a esta tabla cuando se publiquen sus
+        esquemas en `quickpatch-kafka`; no cambian el formato del aviso.
+      payload:
+        $ref: '#/components/schemas/ServiceRequestStatusChanged'
+      examples:
+        - name: asignada
+          payload:
+            type: service-request.status-changed
+            serviceRequestId: 9a7b6c5d-1e2f-4a3b-8c7d-6e5f4a3b2c1d
+            status: asignado
+            occurredAt: '2026-10-12T16:10:00Z'
+    offerCreated:
+      name: offer.created
+      title: Nueva oferta para el técnico
+      summary: La app del técnico vuelve a pedir `GET /v1/matching/offers?status=pendiente`.
+      description: |
+        Se envía solo al **técnico** de la oferta (`technicianId` de `matching.offer-created`). No lleva
+        la dirección ni la descripción: la oferta se consulta por REST (RN-SR13, SCRUM-30).
+      payload:
+        $ref: '#/components/schemas/OfferCreated'
+      examples:
+        - name: oferta
+          payload:
+            type: offer.created
+            attemptId: 2d4f6a8c-1111-4b22-9c33-444455556666
+            serviceRequestId: 9a7b6c5d-1e2f-4a3b-8c7d-6e5f4a3b2c1d
+            expiresAt: '2026-10-12T16:13:00Z'
+            occurredAt: '2026-10-12T16:10:00Z'
+    serviceRequestCountsChanged:
+      name: service-request.counts-changed
+      title: Cambiaron los conteos del panel
+      summary: El panel del `admin_tenant` vuelve a pedir el resumen de solicitudes por estado.
+      description: |
+        Se envía a todos los `admin_tenant` conectados del tenant del evento cada vez que se envía un
+        `service-request.status-changed` en ese tenant. No lleva conteos: el panel los consulta en
+        `GET /v1/admin/service-requests/summary` (RF-18), que todavía no tiene contrato REST.
+      payload:
+        $ref: '#/components/schemas/ServiceRequestCountsChanged'
+      examples:
+        - name: conteos
+          payload:
+            type: service-request.counts-changed
+            occurredAt: '2026-10-12T16:10:00Z'
+  schemas:
+    Auth:
+      type: object
+      additionalProperties: false
+      required: [type, token]
+      properties:
+        type:
+          type: string
+          const: auth
+        token:
+          type: string
+          minLength: 1
+          maxLength: 8192
+          description: Token de acceso emitido por Identity (JWT RS256). Communication no lo registra en logs.
+    AuthAccepted:
+      type: object
+      required: [type, expiresAt]
+      properties:
+        type:
+          type: string
+          const: auth.accepted
+        expiresAt:
+          type: string
+          format: date-time
+          description: Vencimiento del token (claim `exp`); a esa hora Communication cierra con `4004`.
+    ServiceRequestStatusChanged:
+      type: object
+      required: [type, serviceRequestId, status, occurredAt]
+      properties:
+        type:
+          type: string
+          const: service-request.status-changed
+        serviceRequestId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          description: Estado nuevo de la solicitud (DD 7.4).
+          enum: [buscando_tecnico, en_espera, asignado, cotizado, cotizacion_aceptada, en_progreso, completado, pagado, cancelado]
+        occurredAt:
+          type: string
+          format: date-time
+          description: '`occurredAt` del evento de Kafka que originó el aviso.'
+    OfferCreated:
+      type: object
+      required: [type, attemptId, serviceRequestId, expiresAt, occurredAt]
+      properties:
+        type:
+          type: string
+          const: offer.created
+        attemptId:
+          type: string
+          format: uuid
+        serviceRequestId:
+          type: string
+          format: uuid
+        expiresAt:
+          type: string
+          format: date-time
+        occurredAt:
+          type: string
+          format: date-time
+    ServiceRequestCountsChanged:
+      type: object
+      required: [type, occurredAt]
+      properties:
+        type:
+          type: string
+          const: service-request.counts-changed
+        occurredAt:
+          type: string
+          format: date-time
+x-close-codes:
+  description: |
+    Códigos de cierre del WebSocket. Los 4xxx son de la aplicación (RFC 6455, sección 7.4.2). Con 4000 a
+    4003 la app no debe reintentar con el mismo token; con 1001, 1011 y 4004 sí se reconecta (con un
+    token nuevo en el caso de 4004).
+  codes:
+    - code: 1001
+      reason: reinicio
+      description: Communication se detiene o se reinicia (despliegue, reinicio del pod). La app se reconecta con espera creciente.
+    - code: 1009
+      reason: trama-muy-grande
+      description: La trama supera 8 KB.
+    - code: 1011
+      reason: error-interno
+      description: Error inesperado del servidor. La app se reconecta con espera creciente.
+    - code: 4000
+      reason: trama-invalida
+      description: La trama no es JSON, no es `auth`, le faltan campos, o la app envió una trama después de autenticarse.
+    - code: 4001
+      reason: token-invalido
+      description: Firma, emisor, audiencia o claims inválidos, o el token ya estaba vencido al autenticarse. La app debe iniciar sesión de nuevo.
+    - code: 4002
+      reason: sin-autenticacion
+      description: No llegó la trama `auth` en los primeros 10 segundos.
+    - code: 4003
+      reason: rol-no-admitido
+      description: El rol del token no usa este canal (por ejemplo `admin_plataforma` o `proveedor`).
+    - code: 4004
+      reason: token-vencido
+      description: El token venció durante la conexión. La app se reconecta con un token nuevo.

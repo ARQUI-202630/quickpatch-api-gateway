@@ -8,6 +8,7 @@ Es uno de los 12 repositorios del multirepo (SCRUM-333). Los demás repositorios
 
 ```text
 openapi/   Contratos REST, uno por servicio y versión mayor (fuente de verdad)
+asyncapi/  Contratos de los canales WebSocket (AsyncAPI 3), uno por canal y versión mayor
 nginx/     Configuración de Nginx del gateway (VM1) para producción, QA y Grafana
 ```
 
@@ -34,6 +35,14 @@ nginx/     Configuración de Nginx del gateway (VM1) para producción, QA y Graf
 |Catalog|1.2.0|Catalog|Mobile, panel Angular|[catalog.v1.yaml](openapi/catalog.v1.yaml)|
 |Identity|1.3.0|Identity|Mobile, panel Angular|[identity.v1.yaml](openapi/identity.v1.yaml)|
 |Matching|1.0.0|Matching|Mobile (técnico)|[matching.v1.yaml](openapi/matching.v1.yaml)|
+
+## Catálogo AsyncAPI
+
+|Canal|Versión|Proveedor|Consumidores|Archivo|
+|---|---|---|---|---|
+|Estado en tiempo real (`/v1/realtime`, ADR-023)|1.0.0|Communication|Mobile, panel Angular|[realtime.v1.yaml](asyncapi/realtime.v1.yaml)|
+
+El CI todavía no valida `asyncapi/`; mientras tanto se valida con `npx @asyncapi/cli validate asyncapi/realtime.v1.yaml`.
 
 ## Historia
 
