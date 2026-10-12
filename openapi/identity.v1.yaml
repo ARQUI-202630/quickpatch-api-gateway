@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Identity API
-  version: 1.2.0
+  version: 1.3.0
   description: |
     Contrato REST de Identity Service (DD, sección 8.2.1): registro de clientes y de técnicos o
     proveedores, inicio de sesión y perfil del usuario autenticado.
@@ -11,6 +11,10 @@ info:
 
     **1.2.0** (compatible): gestión de tenants por el administrador de la plataforma (RF-21, DD 10.4,
     SCRUM-112): listar los tenants y activarlos o desactivarlos.
+
+    **1.3.0** (compatible): verificación de técnicos y proveedores por el administrador del tenant
+    (RF-19, RF-20, DD V4 8.3.13, SCRUM-39 y SCRUM-40): listarlos por estado, aprobarlos, rechazarlos y
+    suspenderlos. Cada cambio queda en `audit_logs` y publica `technician.verification-changed`.
 
     - **Proveedor:** Identity Service.
     - **Consumidores:** app móvil Flutter, panel Angular y API Gateway.
@@ -34,6 +38,8 @@ tags:
     description: Perfil del usuario autenticado.
   - name: platform
     description: Operaciones de plataforma, solo para `admin_plataforma` (DD 10.4).
+  - name: technicians-admin
+    description: Verificación de técnicos y proveedores, solo para `admin_tenant` y sobre su propio tenant.
 paths:
   /v1/auth/register/client:
     post:
@@ -264,6 +270,155 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /v1/admin/technicians:
+    get:
+      tags: [technicians-admin]
+      operationId: listTechnicians
+      summary: Listar los técnicos y proveedores del tenant
+      description: |
+        Devuelve los técnicos y proveedores del tenant del token, opcionalmente filtrados por estado de
+        verificación, del más antiguo al más reciente (RF-19, SCRUM-39 criterio 1). Solo `admin_tenant`;
+        nunca devuelve técnicos de otro tenant (RLS, SCRUM-39 criterio 7).
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: verificationStatus
+          in: query
+          required: false
+          description: Filtra por estado de verificación. Sin el parámetro devuelve todos.
+          schema:
+            $ref: '#/components/schemas/VerificationStatus'
+        - name: page
+          in: query
+          required: false
+          description: Página, desde 1 (DD 8.1).
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: size
+          in: query
+          required: false
+          description: Elementos por página, máximo 100 (DD 8.1).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Técnicos y proveedores del tenant.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TechnicianPage'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/admin/technicians/{userId}/approve:
+    post:
+      tags: [technicians-admin]
+      operationId: approveTechnician
+      summary: Aprobar un técnico o proveedor
+      description: |
+        Pasa el técnico a `aprobado` desde `pendiente`, `rechazado` (nueva revisión) o `suspendido`
+        (reactivación), según la tabla del DD 8.3.13. No lleva cuerpo. Solo `admin_tenant` y sobre su tenant.
+        Queda en `audit_logs` (`aprobar_tecnico`) y publica `technician.verification-changed`; desde ese
+        momento el técnico es candidato del matching (RN-TP1).
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/TechnicianUserId'
+      responses:
+        '200':
+          $ref: '#/components/responses/VerificationChanged'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/TechnicianNotFound'
+        '409':
+          $ref: '#/components/responses/InvalidTransition'
+  /v1/admin/technicians/{userId}/reject:
+    post:
+      tags: [technicians-admin]
+      operationId: rejectTechnician
+      summary: Rechazar un técnico o proveedor
+      description: |
+        Pasa el técnico de `pendiente` a `rechazado`, con motivo obligatorio (RF-19, SCRUM-39 criterio 2).
+        Solo `admin_tenant` y sobre su tenant. Queda en `audit_logs` (`rechazar_tecnico`) y publica
+        `technician.verification-changed`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/TechnicianUserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerificationReasonRequest'
+            example:
+              reason: El documento de identidad no es legible.
+      responses:
+        '200':
+          $ref: '#/components/responses/VerificationChanged'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/TechnicianNotFound'
+        '409':
+          $ref: '#/components/responses/InvalidTransition'
+  /v1/admin/technicians/{userId}/suspend:
+    post:
+      tags: [technicians-admin]
+      operationId: suspendTechnician
+      summary: Suspender un técnico o proveedor
+      description: |
+        Pasa el técnico de `aprobado` a `suspendido`, con motivo obligatorio (RF-20, SCRUM-40). Solo
+        `admin_tenant` y sobre su tenant. La fecha y el responsable quedan en `audit_logs`
+        (`suspender_tecnico`) y se publica `technician.verification-changed`. Un servicio en curso no se
+        interrumpe (RN-TP2).
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/TechnicianUserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerificationReasonRequest'
+            example:
+              reason: Reclamos repetidos por incumplimiento de citas.
+      responses:
+        '200':
+          $ref: '#/components/responses/VerificationChanged'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/TechnicianNotFound'
+        '409':
+          $ref: '#/components/responses/InvalidTransition'
 components:
   securitySchemes:
     bearerAuth:
@@ -277,6 +432,14 @@ components:
       in: header
       required: false
       description: Identificador de correlación. Si no llega, el servicio genera uno y lo devuelve.
+      schema:
+        type: string
+        format: uuid
+    TechnicianUserId:
+      name: userId
+      in: path
+      required: true
+      description: Identificador del usuario técnico o proveedor (`users.id`).
       schema:
         type: string
         format: uuid
@@ -424,6 +587,81 @@ components:
       properties:
         status:
           $ref: '#/components/schemas/TenantStatus'
+    VerificationStatus:
+      type: string
+      description: Estado de verificación del técnico (DD 5.3).
+      enum: [pendiente, aprobado, rechazado, suspendido]
+    AdminTechnician:
+      type: object
+      required: [userId, fullName, email, role, documentId, specialtyId, verificationStatus, createdAt]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        fullName:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+          nullable: true
+        role:
+          type: string
+          enum: [tecnico, proveedor]
+        documentId:
+          type: string
+          description: Documento de identidad, para que el administrador lo verifique.
+        specialtyId:
+          type: string
+          format: uuid
+          description: Categoría de servicio que atiende (Catalog).
+        verificationStatus:
+          $ref: '#/components/schemas/VerificationStatus'
+        verificationReason:
+          type: string
+          nullable: true
+          description: Motivo del último rechazo o suspensión.
+        createdAt:
+          type: string
+          format: date-time
+    TechnicianPage:
+      type: object
+      required: [items, page, size, totalItems]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminTechnician'
+        page:
+          type: integer
+        size:
+          type: integer
+        totalItems:
+          type: integer
+    VerificationReasonRequest:
+      type: object
+      required: [reason]
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          minLength: 5
+          maxLength: 500
+          description: Motivo del rechazo o la suspensión; lo ve el técnico.
+    TechnicianVerification:
+      type: object
+      required: [userId, verificationStatus, reason]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        verificationStatus:
+          $ref: '#/components/schemas/VerificationStatus'
+        reason:
+          type: string
+          nullable: true
+          description: Motivo; `null` al aprobar.
     Problem:
       type: object
       description: Detalle de error según RFC 9457.
@@ -473,3 +711,24 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
+    TechnicianNotFound:
+      description: El técnico no existe en el tenant del administrador (`problems/no-encontrado`); un técnico de otro tenant responde igual (RN-U6).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    InvalidTransition:
+      description: El estado actual del técnico no admite la acción según la tabla del DD 8.3.13 (`problems/transicion-invalida`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    VerificationChanged:
+      description: Estado de verificación nuevo.
+      headers:
+        X-Correlation-Id:
+          $ref: '#/components/headers/CorrelationId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/TechnicianVerification'
