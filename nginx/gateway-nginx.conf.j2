@@ -44,7 +44,7 @@ http {
     }
   }
 
-  # QA (VM2, ADR-022). Solo red del equipo: el panel de QA todavía no tiene login.
+  # QA (API en el k3s de VM2, panel servido desde VM1; ADR-022). Solo red del equipo: el panel de QA todavía no tiene login.
   server {
     listen {{ ansible_host }}:443 ssl;
     server_name {{ gateway_hosts.qa }};
@@ -59,15 +59,12 @@ http {
       proxy_pass http://{{ ip.vm2 }}:30080/;
     }
 
-    # El panel de QA todavía no se publica en VM1: hasta entonces, lo demás va al Traefik de QA.
+    # Panel Angular de QA (SPA): archivos estáticos servidos aquí mismo, igual que en producción pero desde su propia
+    # carpeta (panel-qa), para que publicar en QA no toque el panel de producción. Lo escribe el job "Panel en qa" de
+    # quickpatch-web con el runner de VM1.
     location / {
-      proxy_pass http://{{ ip.vm2 }}:30080;
-      proxy_set_header Host $host;
-      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto https;
-      proxy_http_version 1.1;
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection "upgrade";
+      root /usr/share/nginx/panel-qa;
+      try_files $uri $uri/ /index.html;
     }
   }
 
