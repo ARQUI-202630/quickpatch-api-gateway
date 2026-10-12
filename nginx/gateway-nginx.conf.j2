@@ -33,6 +33,16 @@ http {
     add_header Strict-Transport-Security "max-age=31536000" always;
     add_header X-Content-Type-Options nosniff always;
 
+    # WebSocket de seguimiento en tiempo real (ADR-023, SCRUM-451): Communication hace ping cada 30 s, así que los
+    # tiempos de espera quedan por encima (75 s) y no se corta una conexión inactiva a los 60 s por defecto. Sin buffer,
+    # las tramas llegan de inmediato. `Upgrade` y `Connection` ya los fija el bloque http.
+    location /api/v1/realtime {
+      proxy_pass http://microservicios/v1/realtime;
+      proxy_read_timeout 75s;
+      proxy_send_timeout 75s;
+      proxy_buffering off;
+    }
+
     location /api/ {
       proxy_pass http://microservicios/;
     }
@@ -55,6 +65,16 @@ http {
 
     # La API: igual que en producción, el gateway quita /api y reenvía al Traefik de QA (VM2), que elige el servicio por la
     # ruta del contrato (los Ingress de cada servicio no llevan /api). Sin esto, /api/v1/... llega a Traefik y da 404.
+    # WebSocket de seguimiento en tiempo real (ADR-023, SCRUM-451): Communication hace ping cada 30 s, así que los
+    # tiempos de espera quedan por encima (75 s) y no se corta una conexión inactiva a los 60 s por defecto. Sin buffer,
+    # las tramas llegan de inmediato. `Upgrade` y `Connection` ya los fija el bloque http.
+    location /api/v1/realtime {
+      proxy_pass http://{{ ip.vm2 }}:30080/v1/realtime;
+      proxy_read_timeout 75s;
+      proxy_send_timeout 75s;
+      proxy_buffering off;
+    }
+
     location /api/ {
       proxy_pass http://{{ ip.vm2 }}:30080/;
     }
