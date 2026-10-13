@@ -1,0 +1,181 @@
+openapi: 3.0.3
+info:
+  title: QUICKPATCH — Identity API interna
+  version: 1.0.0
+  description: |
+    Contrato **interno** de Identity Service: lo llaman otros servicios dentro del clúster, nunca las
+    apps. No pasa por el API Gateway ni tiene ruta en el Ingress (DD V4 8.3.4, SCRUM-91).
+
+    **Por qué existe.** ServiceRequest no guarda el nombre ni el teléfono de los usuarios. Para armar el
+    detalle de una solicitud (`GET /v1/service-requests/{id}`, bloques `technician` y `client`) los pide a
+    Identity en una sola consulta por lote. Es una de las excepciones de lectura síncrona del principio
+    del SAD (sección 4.3): el usuario espera la respuesta en ese momento.
+
+    - **Proveedor:** Identity Service.
+    - **Consumidores:** ServiceRequest Service.
+    - **Acceso:** solo desde el clúster, por el Service de Kubernetes `identity` (puerto 8080). El
+      Ingress de Identity no publica `/internal`, así que el gateway no la expone.
+    - **Token:** el servicio que llama reenvía el JWT del usuario que hizo la petición original, sin
+      cambiarlo. Identity lo valida igual que en su API pública (RS256, `iss`, `aud`, `exp`) y toma el
+      tenant de `tenant_id` (RN-U3). Así no hace falta una credencial nueva entre servicios, y el
+      servicio que llama nunca puede leer usuarios de otro tenant.
+    - **Datos:** solo `fullName` y `phone`. Nunca el correo, el documento, el rol ni datos de la cuenta.
+      El servicio que llama decide qué campos muestra a quién (RN-SR13); por ejemplo, ServiceRequest no
+      entrega el teléfono del técnico.
+    - **Fallos:** el servicio que llama usa un tiempo de espera corto. Si Identity no responde, el
+      detalle llega con `fullName` y `phone` en `null` (contrato de ServiceRequest 1.1.0).
+    - Los errores se devuelven como `application/problem+json` (RFC 9457).
+  contact:
+    name: Equipo QUICKPATCH
+    url: https://github.com/ARQUI-202630/quickpatch
+servers:
+  - url: http://identity.quickpatch.svc.cluster.local:8080
+    description: Service de Kubernetes de Identity, solo dentro del clúster (producción y QA).
+tags:
+  - name: users-internal
+    description: Lectura de datos básicos de usuarios para otros servicios.
+security:
+  - bearerAuth: []
+paths:
+  /internal/v1/users:
+    get:
+      tags: [users-internal]
+      operationId: lookupUsers
+      summary: Consultar nombre y teléfono de varios usuarios
+      description: |
+        Devuelve los usuarios del tenant del token cuyos identificadores llegan en `ids`. Los
+        identificadores que no existen o que son de otro tenant se omiten de `items`, sin error, para
+        no revelar si existen. El orden de `items` no está garantizado. Los identificadores repetidos
+        se tratan como uno solo.
+
+        Roles admitidos: `cliente`, `empresa_contacto`, `tecnico` y `admin_tenant`, que son los que
+        consultan detalles de solicitudes. Cualquier otro rol responde `403`.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: ids
+          in: query
+          required: true
+          description: Identificadores de usuario (`sub`), repitiendo el parámetro. Entre 1 y 20.
+          style: form
+          explode: true
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 20
+            items:
+              type: string
+              format: uuid
+          example:
+            - 0190f3a2-7c1e-7d40-9a51-2b3c4d5e6f70
+            - 0190f3a2-9d2f-7e51-8b62-3c4d5e6f7081
+      responses:
+        '200':
+          description: Usuarios encontrados en el tenant del token.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserLookupResponse'
+              example:
+                items:
+                  - id: 0190f3a2-7c1e-7d40-9a51-2b3c4d5e6f70
+                    fullName: Ana Gómez
+                    phone: '+573009876543'
+                  - id: 0190f3a2-9d2f-7e51-8b62-3c4d5e6f7081
+                    fullName: Carlos Pérez
+                    phone: '+573101234567'
+        '400':
+          description: '`ids` falta, tiene más de 20 elementos o alguno no es un UUID (`problems/validacion`, con `errors.ids`).'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://quickpatch.internal/problems/validacion
+                title: La solicitud tiene datos inválidos
+                status: 400
+                errors:
+                  ids: [Envía entre 1 y 20 identificadores de usuario.]
+        '401':
+          description: Falta el JWT o es inválido o expiró (`problems/no-autenticado`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: El rol del token no puede consultar usuarios (`problems/no-autorizado`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT del usuario de la petición original, reenviado por el servicio que llama.
+  parameters:
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Identificador de correlación de la petición original; el servicio que llama lo propaga.
+      schema:
+        type: string
+        format: uuid
+  headers:
+    CorrelationId:
+      description: Identificador de correlación de la petición.
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    UserLookupResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/UserSummary'
+    UserSummary:
+      type: object
+      required: [id, fullName, phone]
+      properties:
+        id:
+          type: string
+          format: uuid
+        fullName:
+          type: string
+        phone:
+          type: string
+          nullable: true
+          description: Teléfono registrado; `null` si el usuario no lo dio (es opcional para clientes).
+    Problem:
+      type: object
+      description: Detalle de error según RFC 9457.
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+        title:
+          type: string
+        status:
+          type: integer
+          format: int32
+        detail:
+          type: string
+        correlationId:
+          type: string
+          format: uuid
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
