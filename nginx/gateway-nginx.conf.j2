@@ -14,6 +14,20 @@ http {
     ''      close;
   }
 
+  # Canal del cliente (RN-U5, DD 10.3): el gateway fija X-Channel-Id y nunca lo toma de la petición, así que un cliente no
+  # puede inventárselo. El navegador del panel manda Origin en los POST (login) y Referer en los GET; todo lo demás es la
+  # app móvil. Límite: un cliente que no sea navegador puede escribir esas cabeceras; con un solo tenant da igual (los dos
+  # canales apuntan a él) y con más de uno hace falta DEP-09 (DD 14.3).
+  # Cuidado: el `proxy_set_header` de este bloque `http` lo heredan todas las `location` solo mientras ninguna defina uno
+  # propio. Si alguien agrega un `proxy_set_header` dentro de una `location` o un `server`, esa ruta deja de heredar todos los
+  # del bloque (Host, X-Forwarded-*, Upgrade y este) y X-Channel-Id volvería a llegar como el cliente lo mande.
+  # El panel debe seguir mandando `Referer` (política por defecto del navegador): con `Referrer-Policy: no-referrer` sus GET
+  # pasarían a quickpatch-mobile sin ningún error.
+  map "$http_origin|$http_referer" $canal {
+    default quickpatch-mobile;
+    "~^\|?https://({{ gateway_hosts.produccion | regex_escape }}|{{ gateway_hosts.qa | regex_escape }})(\||/)" quickpatch-web;
+  }
+
   ssl_certificate     /etc/nginx/certs/quickpatch.crt;
   ssl_certificate_key /etc/nginx/certs/quickpatch.key;
   ssl_protocols TLSv1.2 TLSv1.3;
@@ -22,6 +36,7 @@ http {
   proxy_set_header Host $host;
   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
   proxy_set_header X-Forwarded-Proto https;
+  proxy_set_header X-Channel-Id $canal;
   proxy_set_header Upgrade $http_upgrade;
   proxy_set_header Connection $connection_upgrade;
 
