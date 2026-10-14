@@ -36,6 +36,12 @@ nginx/     Configuración de Nginx del gateway (VM1) para producción, QA y Graf
 |Identity|1.7.0|Identity|Mobile, panel Angular|[identity.v1.yaml](openapi/identity.v1.yaml)|
 |Matching|1.0.0|Matching|Mobile (técnico)|[matching.v1.yaml](openapi/matching.v1.yaml)|
 
+**Contratos internos.** Los llaman otros servicios dentro del clúster; no pasan por el gateway ni tienen ruta en el Ingress (prefijo `/internal`). El servicio que llama reenvía el JWT del usuario.
+
+|API|Versión|Proveedor|Consumidores|Archivo|
+|---|---|---|---|---|
+|Identity interna (nombre y teléfono por lote)|1.0.0|Identity|ServiceRequest|[identity-internal.v1.yaml](openapi/identity-internal.v1.yaml)|
+
 ## Catálogo AsyncAPI
 
 |Canal|Versión|Proveedor|Consumidores|Archivo|
