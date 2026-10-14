@@ -33,7 +33,7 @@ nginx/     Configuración de Nginx del gateway (VM1) para producción, QA y Graf
 |---|---|---|---|---|
 |ServiceRequest|1.1.0|ServiceRequest|Mobile (cliente y técnico)|[service-request.v1.yaml](openapi/service-request.v1.yaml)|
 |Catalog|1.2.0|Catalog|Mobile, panel Angular|[catalog.v1.yaml](openapi/catalog.v1.yaml)|
-|Identity|1.5.0|Identity|Mobile, panel Angular|[identity.v1.yaml](openapi/identity.v1.yaml)|
+|Identity|1.6.0|Identity|Mobile, panel Angular|[identity.v1.yaml](openapi/identity.v1.yaml)|
 |Matching|1.0.0|Matching|Mobile (técnico)|[matching.v1.yaml](openapi/matching.v1.yaml)|
 
 ## Catálogo AsyncAPI

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Identity API
-  version: 1.5.0
+  version: 1.6.0
   description: |
     Contrato REST de Identity Service (DD, sección 8.2.1): registro de clientes y de técnicos o
     proveedores, inicio de sesión y perfil del usuario autenticado.
@@ -21,10 +21,14 @@ info:
 
     **1.5.0** (compatible): el administrador de la plataforma crea tenants (RF-21, DD 8.2.1, SCRUM-61).
 
+    **1.6.0** (compatible): el registro y el login declaran la cabecera `X-Channel-Id` (DD 8.1, RN-U5,
+    DEP-09, SCRUM-60) y la respuesta `503 canal-sin-tenant`, que el servicio ya devolvía.
+
     - **Proveedor:** Identity Service.
     - **Consumidores:** app móvil Flutter, panel Angular y API Gateway.
-    - **Tenant:** en el registro y el login se resuelve a partir del canal por el que llega la petición
-      (RN-U5, DD 11.3), nunca de un campo del cuerpo. En el MVP opera un solo tenant por canal.
+    - **Tenant:** en el registro y el login se resuelve a partir del canal (`X-Channel-Id`) por el que llega
+      la petición (RN-U5, DD 10.3), nunca de un campo del cuerpo. Identity tiene configurado a qué tenant
+      apunta cada canal; sin cabecera se usa el tenant de la instancia.
     - **Token:** JWT firmado con RS256 por Identity. Claims: `sub` (id del usuario), `tenant_id`, `role`,
       `iss`, `aud`, `exp`. Los demás servicios lo validan con la llave pública de Identity.
     - Los errores se devuelven como `application/problem+json` (RFC 9457).
@@ -58,6 +62,7 @@ paths:
         tenant (RN-U1) y la contraseña se guarda con un hash BCrypt (RN-U2, RNF-03). No inicia sesión.
       security: []
       parameters:
+        - $ref: '#/components/parameters/ChannelId'
         - $ref: '#/components/parameters/CorrelationId'
       requestBody:
         required: true
@@ -85,6 +90,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/ChannelWithoutTenant'
   /v1/auth/register/technician:
     post:
       tags: [auth]
@@ -97,6 +104,7 @@ paths:
         de servicio de Catalog (referencia lógica, propuesta P-03 del DD). No inicia sesión.
       security: []
       parameters:
+        - $ref: '#/components/parameters/ChannelId'
         - $ref: '#/components/parameters/CorrelationId'
       requestBody:
         required: true
@@ -124,6 +132,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/ChannelWithoutTenant'
   /v1/auth/login:
     post:
       tags: [auth]
@@ -136,6 +146,7 @@ paths:
         Correo inexistente y contraseña incorrecta responden igual (`401`), para no revelar qué correos existen.
       security: []
       parameters:
+        - $ref: '#/components/parameters/ChannelId'
         - $ref: '#/components/parameters/CorrelationId'
       requestBody:
         required: true
@@ -178,6 +189,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/ChannelWithoutTenant'
   /v1/users/me:
     get:
       tags: [users]
@@ -585,6 +598,17 @@ components:
       bearerFormat: JWT
       description: JWT RS256 emitido por este servicio con los claims `sub`, `tenant_id` y `role`.
   parameters:
+    ChannelId:
+      name: X-Channel-Id
+      in: header
+      required: false
+      description: |
+        Canal de la app o del panel (por ejemplo `quickpatch-mobile`) en las peticiones sin token. Identity lo
+        traduce al tenant con su configuración; el Gateway la sobrescribe y no la acepta del cliente (DD 8.1).
+        Sin cabecera se usa el tenant de la instancia.
+      schema:
+        type: string
+        maxLength: 100
     CorrelationId:
       name: X-Correlation-Id
       in: header
@@ -917,6 +941,14 @@ components:
             items:
               type: string
   responses:
+    ChannelWithoutTenant:
+      description: |
+        El canal no tiene un tenant configurado (`problems/canal-sin-tenant`): la cabecera `X-Channel-Id`
+        trae un canal que no está en la configuración de Identity, o la instancia no tiene tenant.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
     Unauthenticated:
       description: Falta el JWT o es inválido o expiró (`problems/no-autenticado`).
       content:
