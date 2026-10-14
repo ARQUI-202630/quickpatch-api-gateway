@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Identity API
-  version: 1.6.0
+  version: 1.7.0
   description: |
     Contrato REST de Identity Service (DD, sección 8.2.1): registro de clientes y de técnicos o
     proveedores, inicio de sesión y perfil del usuario autenticado.
@@ -23,6 +23,12 @@ info:
 
     **1.6.0** (compatible): el registro y el login declaran la cabecera `X-Channel-Id` (DD 8.1, RN-U5,
     DEP-09, SCRUM-60) y la respuesta `503 canal-sin-tenant`, que el servicio ya devolvía.
+
+    **1.7.0** (compatible): invitación del técnico del equipo del proveedor (DD 8.3.14, SCRUM-461). El alta
+    devuelve al proveedor un enlace de un solo uso, que vence a las 72 horas, para que el técnico defina su
+    contraseña; el proveedor puede generar uno nuevo, y el técnico la define con `POST /v1/auth/password/setup`.
+    El correo queda fuera del MVP (ADR-024), así que el proveedor comparte el enlace por el medio que use con su
+    técnico.
 
     - **Proveedor:** Identity Service.
     - **Consumidores:** app móvil Flutter, panel Angular y API Gateway.
@@ -189,6 +195,44 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/ChannelWithoutTenant'
+  /v1/auth/password/setup:
+    post:
+      tags: [auth]
+      operationId: setupPassword
+      summary: Definir la contraseña con una invitación
+      description: |
+        El técnico del equipo de un proveedor define su contraseña con el token de su invitación (DD 8.3.14).
+        El tenant sale del canal (`X-Channel-Id`, RN-U5), igual que en el login. El token sirve una sola vez y
+        vence a las 72 horas; usado, vencido, anulado o de otro tenant responde igual (`400 enlace-invalido`),
+        para no revelar cuál fue el caso. No inicia sesión: después el técnico entra con `POST /v1/auth/login`.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordSetupRequest'
+      responses:
+        '204':
+          description: Contraseña definida.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+        '400':
+          description: |
+            La contraseña no cumple la política (`problems/validacion`, en `errors.password`) o el enlace no es
+            válido (`problems/enlace-invalido`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          $ref: '#/components/responses/TenantDisabled'
         '503':
           $ref: '#/components/responses/ChannelWithoutTenant'
   /v1/users/me:
@@ -494,8 +538,10 @@ paths:
         `technician.registered` con `providerId`. Valida el documento y el correo igual que el registro
         (únicos dentro del tenant).
 
-        El técnico se crea **sin contraseña utilizable**: no puede iniciar sesión hasta que la defina con el
-        enlace que le enviará Communication Service. Ese flujo se especifica en una versión posterior.
+        El técnico se crea **sin contraseña utilizable**: no puede iniciar sesión hasta que la defina con la
+        invitación (`invitation`) que trae la respuesta. Es la única vez que el enlace se muestra: Identity solo
+        guarda su hash. Vence a las 72 horas y sirve una sola vez; si el técnico lo pierde, el proveedor genera
+        otro con `POST /v1/providers/me/technicians/{userId}/invitation`.
       security:
         - bearerAuth: []
       parameters:
@@ -514,14 +560,14 @@ paths:
               specialtyId: 6c1f3d0a-2b7e-4f51-9a3c-6e0d2b8f4a10
       responses:
         '201':
-          description: Técnico creado en el equipo del proveedor, pendiente de verificación.
+          description: Técnico creado en el equipo del proveedor, pendiente de verificación, con su invitación.
           headers:
             X-Correlation-Id:
               $ref: '#/components/headers/CorrelationId'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UserProfile'
+                $ref: '#/components/schemas/ProviderTechnicianCreated'
         '400':
           $ref: '#/components/responses/ValidationError'
         '401':
@@ -590,6 +636,46 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /v1/providers/me/technicians/{userId}/invitation:
+    post:
+      tags: [provider-team]
+      operationId: renewProviderTechnicianInvitation
+      summary: Generar una invitación nueva para un técnico del equipo
+      description: |
+        Genera un enlace nuevo para que el técnico defina su contraseña (DD 8.3.14) y anula los anteriores que
+        no se hayan usado. Solo para técnicos del equipo del proveedor del token (RN-TP4): un técnico de otro
+        proveedor o de otro tenant responde `404`. Si el técnico ya definió su contraseña responde `409`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TechnicianUserId'
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '201':
+          description: Invitación nueva.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invitation'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: El técnico no es del equipo del proveedor (`problems/no-encontrado`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: El técnico ya definió su contraseña (`problems/contrasena-definida`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
 components:
   securitySchemes:
     bearerAuth:
@@ -916,6 +1002,48 @@ components:
           type: integer
         totalItems:
           type: integer
+    Invitation:
+      type: object
+      description: |
+        Invitación para que un técnico del equipo defina su contraseña. El token va después de `#` en el enlace,
+        así no llega a los registros de los servidores web cuando se abre.
+      required: [link, token, expiresAt]
+      properties:
+        link:
+          type: string
+          format: uri
+          description: Enlace que el proveedor comparte con el técnico; la app lo abre en la pantalla de contraseña.
+          example: https://quickpatch.internal/activar#token=3q2-7wEAAAAAbm90LWEtcmVhbC10b2tlbi1qdXN0LWFu
+        token:
+          type: string
+          minLength: 43
+          maxLength: 43
+          description: Token de un solo uso (256 bits en base64url). Identity solo guarda su hash.
+        expiresAt:
+          type: string
+          format: date-time
+    ProviderTechnicianCreated:
+      description: Perfil del técnico creado y su invitación.
+      allOf:
+        - $ref: '#/components/schemas/UserProfile'
+        - type: object
+          required: [invitation]
+          properties:
+            invitation:
+              $ref: '#/components/schemas/Invitation'
+    PasswordSetupRequest:
+      type: object
+      required: [token, password]
+      properties:
+        token:
+          type: string
+          maxLength: 100
+          description: Token de la invitación.
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
     Problem:
       type: object
       description: Detalle de error según RFC 9457.
