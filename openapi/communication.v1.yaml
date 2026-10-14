@@ -1,0 +1,287 @@
+openapi: 3.0.3
+info:
+  title: QUICKPATCH — Communication API
+  version: 1.0.0
+  description: |
+    Contrato REST de Communication Service: el **buzón de notificaciones** dentro de la app (RIE-03,
+    ADR-024, SCRUM-455). Complementa el canal en tiempo real (`asyncapi/realtime.v1.yaml`, ADR-023): el
+    canal avisa al instante si la app está abierta, y el buzón guarda lo que pasó para que el usuario lo vea
+    aunque no la tuviera abierta. El correo y las notificaciones push con la app cerrada quedan fuera del MVP.
+
+    - **Proveedor:** Communication Service, que crea cada notificación al consumir los eventos de Kafka
+      (tabla de tipos en `Notification.type`). Ninguna app crea notificaciones.
+    - **Consumidores:** app móvil Flutter (cliente, `empresa_contacto` y técnico) y API Gateway.
+    - **Usuario y tenant:** salen de los claims `sub` y `tenant_id` del JWT (RN-U3). Cada usuario ve solo
+      sus notificaciones; las de otro usuario u otro tenant responden `404`, para no revelar que existen.
+    - **Texto:** Communication arma `title` y `message` en español a partir del evento. No incluyen la
+      dirección ni el teléfono de nadie (RN-SR13): para el detalle, la app consulta el recurso por REST.
+    - Los errores se devuelven como `application/problem+json` (RFC 9457) con `correlationId`.
+  contact:
+    name: Equipo QUICKPATCH
+    url: https://github.com/ARQUI-202630/quickpatch
+servers:
+  - url: https://quickpatch.internal/api
+    description: Producción, detrás del API Gateway (VM1), que quita el prefijo /api
+  - url: https://qa.quickpatch.internal/api
+    description: Ambiente de QA (VM2, ADR-015)
+tags:
+  - name: notifications
+    description: Buzón de notificaciones del usuario autenticado.
+security:
+  - bearerAuth: []
+paths:
+  /v1/notifications:
+    get:
+      tags: [notifications]
+      operationId: listNotifications
+      summary: Listar las notificaciones del usuario
+      description: |
+        Devuelve las notificaciones del usuario del token, de la más reciente a la más antigua, y cuántas
+        tiene sin leer (`unreadCount`, para el contador de la app). Con `unread=true` devuelve solo las no
+        leídas. Roles admitidos: `cliente`, `empresa_contacto`, `tecnico` y `admin_tenant`; los demás
+        responden `403`.
+
+        Cuando la app recibe un aviso por el canal en tiempo real, puede volver a pedir esta lista para
+        actualizar el contador.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: unread
+          in: query
+          required: false
+          description: '`true`: solo las no leídas. Sin el parámetro, todas.'
+          schema:
+            type: boolean
+            default: false
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Notificaciones del usuario.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPage'
+              example:
+                items:
+                  - id: 0190f3b4-1a2b-7c3d-8e4f-5a6b7c8d9e0f
+                    type: tecnico-asignado
+                    title: Ya tienes técnico
+                    message: Un técnico aceptó tu solicitud y va a ponerse en contacto contigo.
+                    serviceRequestId: 9a7b6c5d-1e2f-4a3b-8c7d-6e5f4a3b2c1d
+                    createdAt: '2026-10-12T16:10:00Z'
+                    readAt: null
+                page: 1
+                size: 20
+                totalItems: 1
+                unreadCount: 1
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/notifications/{id}/read:
+    post:
+      tags: [notifications]
+      operationId: markNotificationRead
+      summary: Marcar una notificación como leída
+      description: |
+        Marca la notificación como leída y la devuelve. Es idempotente: si ya estaba leída, conserva el
+        `readAt` original y responde `200`. Una notificación de otro usuario o de otro tenant, o que no
+        existe, responde `404`.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: id
+          in: path
+          required: true
+          description: Identificador de la notificación.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Notificación leída.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT emitido por Identity Service con los claims `sub`, `tenant_id` y `role`.
+  parameters:
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Identificador de correlación. Si no llega, el servicio genera uno y lo devuelve.
+      schema:
+        type: string
+        format: uuid
+    Page:
+      name: page
+      in: query
+      required: false
+      description: Página, desde 1 (DD 8.1).
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    Size:
+      name: size
+      in: query
+      required: false
+      description: Elementos por página, máximo 100 (DD 8.1).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+  headers:
+    CorrelationId:
+      description: Identificador de correlación de la petición.
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    NotificationType:
+      type: string
+      description: |
+        Qué pasó. Cada tipo nace de un evento de `quickpatch-kafka` que Communication ya consume o que este
+        contrato le suma; la app ignora los tipos que no conoce (agregar un tipo es un cambio compatible).
+
+        |`type`|Evento|Destinatario|
+        |---|---|---|
+        |`solicitud-creada`|`service-request.created`|Cliente dueño|
+        |`tecnico-asignado`|`matching.technician-assigned`|Cliente dueño|
+        |`solicitud-asignada`|`matching.technician-assigned`|Técnico asignado|
+        |`sin-tecnico-disponible`|`matching.no-technician-available`|Cliente dueño|
+        |`busqueda-reanudada`|`matching.search-resumed`|Cliente dueño|
+        |`oferta-recibida`|`matching.offer-created`|Técnico de la oferta|
+        |`registro-recibido`|`technician.registered`|Técnico o proveedor registrado|
+        |`verificacion-actualizada`|`technician.verification-changed`|Técnico o proveedor verificado|
+
+        La cotización y los demás cambios de estado de la solicitud (`service-request.quoted`, `.started`,
+        `.completed`, `.cancelled`, `payment.approved`) se agregan cuando se publiquen sus esquemas.
+      enum:
+        - solicitud-creada
+        - tecnico-asignado
+        - solicitud-asignada
+        - sin-tecnico-disponible
+        - busqueda-reanudada
+        - oferta-recibida
+        - registro-recibido
+        - verificacion-actualizada
+    Notification:
+      type: object
+      required: [id, type, title, message, serviceRequestId, createdAt, readAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          $ref: '#/components/schemas/NotificationType'
+        title:
+          type: string
+          maxLength: 100
+          description: Título corto para la lista.
+        message:
+          type: string
+          maxLength: 500
+          description: Texto para el usuario; sin dirección ni teléfono (RN-SR13).
+        serviceRequestId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Solicitud relacionada, para abrir su detalle; `null` en los tipos de registro y verificación.
+        createdAt:
+          type: string
+          format: date-time
+          description: '`occurredAt` del evento que originó la notificación.'
+        readAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Momento en que el usuario la marcó como leída; `null` si no la ha leído.
+    NotificationPage:
+      type: object
+      required: [items, page, size, totalItems, unreadCount]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Notification'
+        page:
+          type: integer
+        size:
+          type: integer
+        totalItems:
+          type: integer
+          description: Total de notificaciones con el filtro pedido.
+        unreadCount:
+          type: integer
+          description: Total de notificaciones sin leer del usuario, sin importar el filtro ni la página.
+    Problem:
+      type: object
+      description: Detalle de error según RFC 9457.
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+        title:
+          type: string
+        status:
+          type: integer
+          format: int32
+        detail:
+          type: string
+        correlationId:
+          type: string
+          format: uuid
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+  responses:
+    ValidationError:
+      description: Parámetros inválidos (`problems/validacion`, con `errors` por campo).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthenticated:
+      description: Falta el JWT o es inválido o expiró (`problems/no-autenticado`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: El rol del token no tiene buzón (`problems/no-autorizado`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: La notificación no existe o no es del usuario (`problems/no-encontrado`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
