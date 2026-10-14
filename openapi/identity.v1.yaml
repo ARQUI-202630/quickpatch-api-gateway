@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Identity API
-  version: 1.3.0
+  version: 1.4.0
   description: |
     Contrato REST de Identity Service (DD, sección 8.2.1): registro de clientes y de técnicos o
     proveedores, inicio de sesión y perfil del usuario autenticado.
@@ -15,6 +15,9 @@ info:
     **1.3.0** (compatible): verificación de técnicos y proveedores por el administrador del tenant
     (RF-19, RF-20, DD V4 8.3.13, SCRUM-39 y SCRUM-40): listarlos por estado, aprobarlos, rechazarlos y
     suspenderlos. Cada cambio queda en `audit_logs` y publica `technician.verification-changed`.
+
+    **1.4.0** (compatible): equipo del proveedor (RF-16, DD 8.3.14, SCRUM-36): el `proveedor` da de alta
+    técnicos en su equipo y lista su equipo por estado (`activo` o `inactivo`).
 
     - **Proveedor:** Identity Service.
     - **Consumidores:** app móvil Flutter, panel Angular y API Gateway.
@@ -40,6 +43,8 @@ tags:
     description: Operaciones de plataforma, solo para `admin_plataforma` (DD 10.4).
   - name: technicians-admin
     description: Verificación de técnicos y proveedores, solo para `admin_tenant` y sobre su propio tenant.
+  - name: provider-team
+    description: Equipo de técnicos del proveedor, solo para `proveedor` y sobre su propio equipo (RN-TP4).
 paths:
   /v1/auth/register/client:
     post:
@@ -419,6 +424,114 @@ paths:
           $ref: '#/components/responses/TechnicianNotFound'
         '409':
           $ref: '#/components/responses/InvalidTransition'
+  /v1/providers/me/technicians:
+    post:
+      tags: [provider-team]
+      operationId: createProviderTechnician
+      summary: Dar de alta un técnico en el equipo del proveedor
+      description: |
+        Crea un usuario con rol `tecnico` en el tenant del proveedor, con `provider_id` igual al proveedor
+        del token y su perfil en `pendiente` (RF-16, RN-TP3, DD 8.3.14). Igual que cualquier técnico, solo
+        participa en el matching cuando el `admin_tenant` lo aprueba (RN-TP1). Publica
+        `technician.registered` con `providerId`. Valida el documento y el correo igual que el registro
+        (únicos dentro del tenant).
+
+        El técnico se crea **sin contraseña utilizable**: no puede iniciar sesión hasta que la defina con el
+        enlace que le enviará Communication Service. Ese flujo se especifica en una versión posterior.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderTechnicianRequest'
+            example:
+              email: carlos.ruiz@example.com
+              fullName: Carlos Ruiz
+              phone: '+573001234567'
+              documentId: '1020304050'
+              specialtyId: 6c1f3d0a-2b7e-4f51-9a3c-6e0d2b8f4a10
+      responses:
+        '201':
+          description: Técnico creado en el equipo del proveedor, pendiente de verificación.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: El rol del token no es `proveedor` (`problems/no-autorizado`) o el tenant está inactivo (`problems/tenant-inactivo`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: El correo (`problems/correo-registrado`) o el documento (`problems/documento-registrado`) ya están registrados en el tenant.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+    get:
+      tags: [provider-team]
+      operationId: listProviderTechnicians
+      summary: Listar el equipo del proveedor
+      description: |
+        Devuelve solo los técnicos cuyo `provider_id` es el proveedor del token (RN-TP4), del más antiguo al
+        más reciente (RF-16, DD 8.3.14). `activo` son los aprobados; `inactivo`, los pendientes, rechazados
+        o suspendidos. La disponibilidad vive en Matching Service y no se incluye en el MVP (DEP-19).
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: status
+          in: query
+          required: false
+          description: Filtra por `activo` o `inactivo`. Sin el parámetro devuelve todo el equipo.
+          schema:
+            type: string
+            enum: [activo, inactivo]
+        - name: page
+          in: query
+          required: false
+          description: Página, desde 1 (DD 8.1).
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: size
+          in: query
+          required: false
+          description: Elementos por página, máximo 100 (DD 8.1).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Técnicos del equipo del proveedor.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderTechnicianPage'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 components:
   securitySchemes:
     bearerAuth:
@@ -662,6 +775,62 @@ components:
           type: string
           nullable: true
           description: Motivo; `null` al aprobar.
+    ProviderTechnicianRequest:
+      type: object
+      description: Mismo cuerpo que el registro de técnico, sin `password` ni `role` (DD 8.3.14).
+      required: [email, fullName, phone, documentId, specialtyId]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 150
+        fullName:
+          type: string
+          minLength: 2
+          maxLength: 150
+        phone:
+          type: string
+          minLength: 7
+          maxLength: 30
+        documentId:
+          type: string
+          minLength: 5
+          maxLength: 30
+          description: Documento de identidad; único dentro del tenant.
+        specialtyId:
+          type: string
+          format: uuid
+          description: Categoría de servicio que atiende (Catalog).
+    ProviderTechnician:
+      type: object
+      required: [userId, fullName, specialtyId, verificationStatus]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        fullName:
+          type: string
+        specialtyId:
+          type: string
+          format: uuid
+          description: Categoría de servicio que atiende (Catalog).
+        verificationStatus:
+          $ref: '#/components/schemas/VerificationStatus'
+    ProviderTechnicianPage:
+      type: object
+      required: [items, page, size, totalItems]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProviderTechnician'
+        page:
+          type: integer
+        size:
+          type: integer
+        totalItems:
+          type: integer
     Problem:
       type: object
       description: Detalle de error según RFC 9457.
