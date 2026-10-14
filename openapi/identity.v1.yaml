@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Identity API
-  version: 1.4.0
+  version: 1.5.0
   description: |
     Contrato REST de Identity Service (DD, sección 8.2.1): registro de clientes y de técnicos o
     proveedores, inicio de sesión y perfil del usuario autenticado.
@@ -18,6 +18,8 @@ info:
 
     **1.4.0** (compatible): equipo del proveedor (RF-16, DD 8.3.14, SCRUM-36): el `proveedor` da de alta
     técnicos en su equipo y lista su equipo por estado (`activo` o `inactivo`).
+
+    **1.5.0** (compatible): el administrador de la plataforma crea tenants (RF-21, DD 8.2.1, SCRUM-61).
 
     - **Proveedor:** Identity Service.
     - **Consumidores:** app móvil Flutter, panel Angular y API Gateway.
@@ -225,6 +227,49 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '403':
           $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [platform]
+      operationId: createTenant
+      summary: Crear un tenant
+      description: |
+        Crea una empresa oferente en estado `activo` (RF-21, DD 5.1). Solo `admin_plataforma` (RN-U6). El NIT
+        es único en la plataforma. La creación queda en `audit_logs` (`crear_tenant`) con el responsable.
+        No crea usuarios ni el canal del tenant: el canal se configura en el despliegue (RN-U5, DEP-09).
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTenantRequest'
+            example:
+              name: Servicios Técnicos Andinos S.A.S.
+              nit: 900123456-7
+      responses:
+        '201':
+          description: Tenant creado.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Ya existe un tenant con ese NIT (`problems/nit-registrado`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
   /v1/platform/tenants/{id}:
     patch:
       tags: [platform]
@@ -693,6 +738,22 @@ components:
         createdAt:
           type: string
           format: date-time
+    CreateTenantRequest:
+      type: object
+      required: [name, nit]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 150
+          description: Nombre de la empresa oferente.
+        nit:
+          type: string
+          minLength: 5
+          maxLength: 30
+          pattern: '^[0-9]+(-[0-9])?$'
+          description: NIT con dígito de verificación opcional (por ejemplo `900123456-7`); único en la plataforma.
     UpdateTenantStatusRequest:
       type: object
       required: [status]
