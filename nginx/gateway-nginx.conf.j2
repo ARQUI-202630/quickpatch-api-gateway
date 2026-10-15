@@ -5,6 +5,10 @@ events {}
 http {
   server_tokens off;
   client_max_body_size 15m;   # evidencias fotográficas
+  # Este archivo reemplaza el nginx.conf completo: sin mime.types, Nginx sirve todo como text/plain y el navegador no
+  # ejecuta los módulos JavaScript del panel (página en blanco).
+  include /etc/nginx/mime.types;
+  default_type application/octet-stream;
 
   upstream microservicios { server {{ ip.vm3 }}:30080; }
 
