@@ -1,13 +1,16 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — ServiceRequest API
-  version: 1.1.0
+  version: 1.2.0
   description: |
     Contrato REST de ServiceRequest Service (DD, sección 8.1).
 
     **1.1.0** (compatible): el técnico asignado consulta el detalle de la solicitud (RF-14, SCRUM-34,
     DD V4 8.3.4) y la respuesta agrega los campos opcionales `assignedAt`, `technician` y `client`. No
     cambia nada de lo que ya recibía el cliente.
+
+    **1.2.0** (compatible): el técnico lista las solicitudes que tiene asignadas
+    (`GET /v1/technicians/me/service-requests`, RF-17, SCRUM-464), sin datos de contacto (RN-SR13).
 
     - **Proveedor:** ServiceRequest Service.
     - **Consumidores:** app móvil Flutter (cliente y técnico) y API Gateway.
@@ -24,6 +27,8 @@ servers:
 tags:
   - name: service-requests
     description: Solicitudes de servicio técnico.
+  - name: technicians
+    description: Solicitudes vistas por el técnico.
 security:
   - bearerAuth: []
 paths:
@@ -127,6 +132,69 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '404':
           $ref: '#/components/responses/NotFound'
+  /v1/technicians/me/service-requests:
+    get:
+      tags: [technicians]
+      operationId: listTechnicianServiceRequests
+      summary: Listar las solicitudes asignadas al técnico
+      description: |
+        Solicitudes cuyo técnico asignado es el usuario autenticado, en el tenant del token, de la
+        asignación más reciente a la más antigua (RF-17). Solo el rol `tecnico`. Desde 1.2.0.
+
+        No trae dirección, ubicación ni datos del cliente (RN-SR13): el detalle, con el contacto
+        mientras la solicitud está entre `asignado` y `completado`, sigue en `GET /v1/service-requests/{id}`.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: status
+          in: query
+          required: false
+          description: Filtra por estado. Sin el parámetro devuelve todas.
+          schema:
+            $ref: '#/components/schemas/ServiceRequestStatus'
+        - name: page
+          in: query
+          required: false
+          description: Página, desde 1 (DD 8.1).
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: size
+          in: query
+          required: false
+          description: Elementos por página, máximo 100 (DD 8.1).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Solicitudes asignadas al técnico.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TechnicianServiceRequestPage'
+              example:
+                items:
+                  - id: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+                    status: asignado
+                    categoryId: 3f1c2a4e-8d7b-4c1a-9e2f-5b6a7c8d9e01
+                    description: Fuga de agua debajo del lavaplatos de la cocina.
+                    createdAt: '2026-10-14T15:02:11Z'
+                    assignedAt: '2026-10-14T15:04:40Z'
+                page: 1
+                size: 20
+                totalItems: 1
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 components:
   securitySchemes:
     bearerAuth:
@@ -267,6 +335,41 @@ components:
         phone:
           type: string
           nullable: true
+    TechnicianServiceRequest:
+      type: object
+      description: Solicitud en la lista del técnico, sin dirección, ubicación ni cliente (RN-SR13). Desde 1.2.0.
+      required: [id, status, categoryId, description, createdAt, assignedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ServiceRequestStatus'
+        categoryId:
+          type: string
+          format: uuid
+        description:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        assignedAt:
+          type: string
+          format: date-time
+    TechnicianServiceRequestPage:
+      type: object
+      required: [items, page, size, totalItems]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TechnicianServiceRequest'
+        page:
+          type: integer
+        size:
+          type: integer
+        totalItems:
+          type: integer
     Problem:
       type: object
       description: Detalle de error según RFC 9457.
