@@ -47,7 +47,7 @@ nginx/     Configuración de Nginx del gateway (VM1) para producción, QA y Graf
 
 |Canal|Versión|Proveedor|Consumidores|Archivo|
 |---|---|---|---|---|
-|Estado en tiempo real (`/v1/realtime`, ADR-023)|1.0.0|Communication|Mobile, panel Angular|[realtime.v1.yaml](asyncapi/realtime.v1.yaml)|
+|Estado en tiempo real (`/v1/realtime`, ADR-023)|1.0.1|Communication|Mobile, panel Angular|[realtime.v1.yaml](asyncapi/realtime.v1.yaml)|
 
 El CI todavía no valida `asyncapi/`; mientras tanto se valida con `npx @asyncapi/cli validate asyncapi/realtime.v1.yaml`.
 

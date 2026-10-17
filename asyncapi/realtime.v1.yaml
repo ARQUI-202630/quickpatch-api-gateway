@@ -1,7 +1,7 @@
 asyncapi: 3.0.0
 info:
   title: QUICKPATCH — Canal de estado en tiempo real
-  version: 1.0.0
+  version: 1.0.1
   description: |
     Contrato del WebSocket `/v1/realtime` (ADR-023; DD V4, sección 8.5). Las apps reciben un **aviso
     corto** cada vez que cambia algo que les corresponde y piden el detalle por REST
@@ -132,13 +132,16 @@ components:
         |Evento|`status`|Destinatarios|
         |---|---|---|
         |`service-request.created`|`buscando_tecnico`|Cliente|
-        |`matching.technician-assigned`|`asignado`|Cliente y técnico asignado|
-        |`matching.no-technician-available`|`en_espera`|Cliente|
-        |`matching.search-resumed`|`buscando_tecnico`|Cliente|
+        |`service-request.status-changed`|El `status` del evento|Cliente y, si lo hay, técnico asignado|
 
-        Los demás eventos del ciclo de la solicitud (`service-request.quoted`, `.started`, `.completed`,
-        `.cancelled`, `payment.approved`, entre otros) se agregan a esta tabla cuando se publiquen sus
-        esquemas en `quickpatch-kafka`; no cambian el formato del aviso.
+        Desde 1.0.1 el aviso sale del dueño del estado: ServiceRequest publica
+        `service-request.status-changed` solo cuando aplicó el cambio (por ejemplo, `asignado`, `en_espera`
+        o de vuelta a `buscando_tecnico` por los eventos de Matching). Antes salía de los eventos de
+        Matching, y uno que ServiceRequest descartaba por viejo producía un aviso de un estado que no
+        ocurrió (SCRUM-466). Cuando la app recibe el aviso, el detalle ya tiene el estado nuevo.
+
+        Las transiciones que lleguen con sus historias (cotización, inicio, cierre, cancelación y pago)
+        también publican `service-request.status-changed`, sin cambiar el formato del aviso.
       payload:
         $ref: '#/components/schemas/ServiceRequestStatusChanged'
       examples:
