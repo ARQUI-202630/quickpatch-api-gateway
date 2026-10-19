@@ -19,7 +19,7 @@ info:
 
     **1.1.0 (SCRUM-472):** tipo `solicitud-cancelada`. Los avisos de estado salen de
     `service-request.status-changed` (SCRUM-466) y no de los eventos de Matching. Cambio compatible: solo agrega un
-    valor a `NotificationType`, y la app ignora los tipos que no conoce.
+    valor a `NotificationType`, que pasa a `x-extensible-enum` porque la app ignora los tipos que no conoce.
   contact:
     name: Equipo QUICKPATCH
     url: https://github.com/ARQUI-202630/quickpatch
@@ -184,7 +184,10 @@ components:
         El estado de la solicitud sale de su dueño, ServiceRequest, que publica `status-changed` solo cuando aplicó el
         cambio (SCRUM-466). La cotización, el inicio, el cierre y el pago se agregan con sus historias.
         `solicitud-cancelada` no incluye el motivo: la app lo muestra desde el detalle de la solicitud.
-      enum:
+
+        Desde 1.1.0 es `x-extensible-enum`: la lista puede crecer sin romper a los clientes, que ignoran los tipos
+        que no conocen.
+      x-extensible-enum:
         - solicitud-creada
         - tecnico-asignado
         - solicitud-asignada
