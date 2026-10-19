@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Communication API
-  version: 1.0.0
+  version: 1.1.0
   description: |
     Contrato REST de Communication Service: el **buzón de notificaciones** dentro de la app (RIE-03,
     ADR-024, SCRUM-455). Complementa el canal en tiempo real (`asyncapi/realtime.v1.yaml`, ADR-023): el
@@ -16,6 +16,10 @@ info:
     - **Texto:** Communication arma `title` y `message` en español a partir del evento. No incluyen la
       dirección ni el teléfono de nadie (RN-SR13): para el detalle, la app consulta el recurso por REST.
     - Los errores se devuelven como `application/problem+json` (RFC 9457) con `correlationId`.
+
+    **1.1.0 (SCRUM-472):** tipo `solicitud-cancelada`. Los avisos de estado salen de
+    `service-request.status-changed` (SCRUM-466) y no de los eventos de Matching. Cambio compatible: solo agrega un
+    valor a `NotificationType`, que pasa a `x-extensible-enum` porque la app ignora los tipos que no conoce.
   contact:
     name: Equipo QUICKPATCH
     url: https://github.com/ARQUI-202630/quickpatch
@@ -168,17 +172,22 @@ components:
         |`type`|Evento|Destinatario|
         |---|---|---|
         |`solicitud-creada`|`service-request.created`|Cliente dueño|
-        |`tecnico-asignado`|`matching.technician-assigned`|Cliente dueño|
-        |`solicitud-asignada`|`matching.technician-assigned`|Técnico asignado|
-        |`sin-tecnico-disponible`|`matching.no-technician-available`|Cliente dueño|
-        |`busqueda-reanudada`|`matching.search-resumed`|Cliente dueño|
+        |`tecnico-asignado`|`service-request.status-changed` a `asignado`|Cliente dueño|
+        |`solicitud-asignada`|`service-request.status-changed` a `asignado`|Técnico asignado|
+        |`sin-tecnico-disponible`|`service-request.status-changed` a `en_espera`|Cliente dueño|
+        |`busqueda-reanudada`|`service-request.status-changed` de `en_espera` a `buscando_tecnico`|Cliente dueño|
+        |`solicitud-cancelada`|`service-request.status-changed` a `cancelado` (1.1.0)|Cliente dueño y, si lo hay, técnico asignado|
         |`oferta-recibida`|`matching.offer-created`|Técnico de la oferta|
         |`registro-recibido`|`technician.registered`|Técnico o proveedor registrado|
         |`verificacion-actualizada`|`technician.verification-changed`|Técnico o proveedor verificado|
 
-        La cotización y los demás cambios de estado de la solicitud (`service-request.quoted`, `.started`,
-        `.completed`, `.cancelled`, `payment.approved`) se agregan cuando se publiquen sus esquemas.
-      enum:
+        El estado de la solicitud sale de su dueño, ServiceRequest, que publica `status-changed` solo cuando aplicó el
+        cambio (SCRUM-466). La cotización, el inicio, el cierre y el pago se agregan con sus historias.
+        `solicitud-cancelada` no incluye el motivo: la app lo muestra desde el detalle de la solicitud.
+
+        Desde 1.1.0 es `x-extensible-enum`: la lista puede crecer sin romper a los clientes, que ignoran los tipos
+        que no conocen.
+      x-extensible-enum:
         - solicitud-creada
         - tecnico-asignado
         - solicitud-asignada
@@ -187,6 +196,7 @@ components:
         - oferta-recibida
         - registro-recibido
         - verificacion-actualizada
+        - solicitud-cancelada
     Notification:
       type: object
       required: [id, type, title, message, serviceRequestId, createdAt, readAt]
