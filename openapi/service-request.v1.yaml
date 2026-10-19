@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — ServiceRequest API
-  version: 1.3.0
+  version: 1.4.0
   description: |
     Contrato REST de ServiceRequest Service (DD, sección 8.1).
 
@@ -19,8 +19,14 @@ info:
     y la dirección que reconoció el geocodificador, para que el cliente confirme o corrija antes de crear la
     solicitud (Nominatim no usa el número de casa).
 
+    **1.4.0** (compatible): panel operativo de solicitudes (RF-18, SCRUM-38). El `admin_tenant` lista las
+    solicitudes de su tenant (`GET /v1/service-requests`) y consulta los conteos por estado
+    (`GET /v1/admin/service-requests/summary`). El `admin_plataforma` consulta solo los conteos de cada tenant
+    (`GET /v1/platform/service-requests/summary`), sin ver solicitudes ni datos de los clientes (DD 10.4, DEP-15).
+    El panel consulta como máximo una vez por minuto.
+
     - **Proveedor:** ServiceRequest Service.
-    - **Consumidores:** app móvil Flutter (cliente y técnico) y API Gateway.
+    - **Consumidores:** app móvil (cliente y técnico), panel web (administradores, desde 1.4.0) y API Gateway.
     - El tenant y el cliente se toman de los claims del JWT (`tenant_id`, `sub`); nunca del cuerpo de la petición.
     - Los errores se devuelven como `application/problem+json` (RFC 9457).
   contact:
@@ -36,10 +42,77 @@ tags:
     description: Solicitudes de servicio técnico.
   - name: technicians
     description: Solicitudes vistas por el técnico.
+  - name: admin
+    description: Panel operativo del administrador del tenant (desde 1.4.0).
+  - name: platform
+    description: Conteos de todos los tenants para el administrador de plataforma (desde 1.4.0).
 security:
   - bearerAuth: []
 paths:
   /v1/service-requests:
+    get:
+      tags: [admin]
+      operationId: listServiceRequests
+      summary: Listar las solicitudes del tenant (administrador del tenant)
+      description: |
+        Solicitudes del tenant del token, de la más reciente a la más antigua (RF-18, SCRUM-38). Desde 1.4.0
+        solo el rol `admin_tenant`; la lista del cliente (DD 8.2.4) llegará en otra versión.
+
+        No trae la dirección, la ubicación ni los datos de contacto: el panel opera la solicitud por su
+        estado y sus identificadores. Una solicitud de otro tenant nunca aparece (RLS, RF-04).
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: status
+          in: query
+          required: false
+          description: Filtra por estado. Sin el parámetro devuelve todas.
+          schema:
+            $ref: '#/components/schemas/ServiceRequestStatus'
+        - name: page
+          in: query
+          required: false
+          description: Página, desde 1 (DD 8.1).
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: size
+          in: query
+          required: false
+          description: Elementos por página, máximo 100 (DD 8.1).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Solicitudes del tenant.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminServiceRequestPage'
+              example:
+                items:
+                  - id: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+                    status: asignado
+                    categoryId: 3f1c2a4e-8d7b-4c1a-9e2f-5b6a7c8d9e01
+                    clientId: 2b8f6c1e-4d3a-4e5b-9c7d-1a2b3c4d5e6f
+                    technicianId: 9d1e2f3a-4b5c-4d6e-8f7a-0b1c2d3e4f5a
+                    createdAt: '2026-10-14T15:02:11Z'
+                    assignedAt: '2026-10-14T15:04:40Z'
+                page: 1
+                size: 20
+                totalItems: 1
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
     post:
       tags: [service-requests]
       operationId: createServiceRequest
@@ -280,6 +353,101 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /v1/admin/service-requests/summary:
+    get:
+      tags: [admin]
+      operationId: getServiceRequestSummary
+      summary: Conteo de solicitudes por estado del tenant
+      description: |
+        Cuántas solicitudes del tenant del token hay en cada uno de los 9 estados y cuántas se crearon hoy
+        (RF-18, SCRUM-38; DD 8.3.15). Solo el rol `admin_tenant`; cuenta bajo RLS, así que nunca incluye
+        otro tenant. Los 9 estados siempre vienen, con 0 si no hay solicitudes. «Hoy» es el día calendario de
+        Bogotá (UTC-5). Desde 1.4.0.
+
+        El panel lo consulta como máximo una vez por minuto (SCRUM-38, criterio 3).
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Conteos del tenant.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceRequestSummary'
+              example:
+                generatedAt: '2026-10-18T16:00:00Z'
+                byStatus:
+                  buscando_tecnico: 4
+                  en_espera: 1
+                  asignado: 6
+                  cotizado: 0
+                  cotizacion_aceptada: 0
+                  en_progreso: 0
+                  completado: 0
+                  pagado: 0
+                  cancelado: 2
+                createdToday: 5
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/platform/service-requests/summary:
+    get:
+      tags: [platform]
+      operationId: getPlatformServiceRequestSummary
+      summary: Conteo de solicitudes por estado de cada tenant
+      description: |
+        Los mismos conteos de `GET /v1/admin/service-requests/summary`, uno por tenant, para el
+        `admin_plataforma` (RF-18, SCRUM-38; DD 10.4, DEP-15). Solo conteos: no devuelve solicitudes,
+        identificadores de usuarios ni datos de los clientes. Desde 1.4.0.
+
+        Es una operación de plataforma: ServiceRequest la resuelve con el rol `service_request_platform`
+        (`BYPASSRLS`, solo `SELECT` sobre `tenant_id`, `status` y `created_at`) y deja cada consulta en el
+        log estructurado con el usuario y el filtro. Un tenant sin solicitudes no aparece en `tenants`; los
+        nombres de los tenants salen de `GET /v1/platform/tenants` (Identity).
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: tenantId
+          in: query
+          required: false
+          description: Solo los conteos de este tenant. Sin el parámetro, todos los tenants.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Conteos por tenant.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlatformServiceRequestSummary'
+              example:
+                generatedAt: '2026-10-18T16:00:00Z'
+                tenants:
+                  - tenantId: 5f0c2d8e-1a3b-4c5d-9e6f-7a8b9c0d1e2f
+                    byStatus:
+                      buscando_tecnico: 4
+                      en_espera: 1
+                      asignado: 6
+                      cotizado: 0
+                      cotizacion_aceptada: 0
+                      en_progreso: 0
+                      completado: 0
+                      pagado: 0
+                      cancelado: 2
+                    createdToday: 5
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 components:
   securitySchemes:
     bearerAuth:
@@ -491,6 +659,103 @@ components:
           type: integer
         totalItems:
           type: integer
+    AdminServiceRequest:
+      type: object
+      description: Solicitud en la lista del administrador del tenant, sin dirección, ubicación ni contacto. Desde 1.4.0.
+      required: [id, status, categoryId, clientId, technicianId, createdAt, assignedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ServiceRequestStatus'
+        categoryId:
+          type: string
+          format: uuid
+        clientId:
+          type: string
+          format: uuid
+          description: Cliente que creó la solicitud.
+        technicianId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Técnico asignado; `null` mientras no haya asignación.
+        createdAt:
+          type: string
+          format: date-time
+        assignedAt:
+          type: string
+          format: date-time
+          nullable: true
+    AdminServiceRequestPage:
+      type: object
+      required: [items, page, size, totalItems]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminServiceRequest'
+        page:
+          type: integer
+        size:
+          type: integer
+        totalItems:
+          type: integer
+    StatusCounts:
+      type: object
+      description: Cantidad de solicitudes en cada estado (DD 7.4); siempre trae los 9, con 0 si no hay. Desde 1.4.0.
+      required: [buscando_tecnico, en_espera, asignado, cotizado, cotizacion_aceptada, en_progreso, completado, pagado, cancelado]
+      additionalProperties: false
+      properties:
+        buscando_tecnico: { type: integer, minimum: 0 }
+        en_espera: { type: integer, minimum: 0 }
+        asignado: { type: integer, minimum: 0 }
+        cotizado: { type: integer, minimum: 0 }
+        cotizacion_aceptada: { type: integer, minimum: 0 }
+        en_progreso: { type: integer, minimum: 0 }
+        completado: { type: integer, minimum: 0 }
+        pagado: { type: integer, minimum: 0 }
+        cancelado: { type: integer, minimum: 0 }
+    ServiceRequestSummary:
+      type: object
+      description: Conteos del tenant del administrador. Desde 1.4.0.
+      required: [generatedAt, byStatus, createdToday]
+      properties:
+        generatedAt:
+          type: string
+          format: date-time
+          description: Momento del cálculo.
+        byStatus:
+          $ref: '#/components/schemas/StatusCounts'
+        createdToday:
+          type: integer
+          minimum: 0
+          description: Solicitudes creadas hoy, día calendario de Bogotá (UTC-5).
+    TenantServiceRequestSummary:
+      type: object
+      required: [tenantId, byStatus, createdToday]
+      properties:
+        tenantId:
+          type: string
+          format: uuid
+        byStatus:
+          $ref: '#/components/schemas/StatusCounts'
+        createdToday:
+          type: integer
+          minimum: 0
+    PlatformServiceRequestSummary:
+      type: object
+      description: Conteos de cada tenant con solicitudes, para el administrador de plataforma. Desde 1.4.0.
+      required: [generatedAt, tenants]
+      properties:
+        generatedAt:
+          type: string
+          format: date-time
+        tenants:
+          type: array
+          items:
+            $ref: '#/components/schemas/TenantServiceRequestSummary'
     Problem:
       type: object
       description: Detalle de error según RFC 9457.
@@ -541,7 +806,7 @@ components:
           schema:
             $ref: '#/components/schemas/Problem'
     Forbidden:
-      description: El rol del usuario no puede ejecutar la operación.
+      description: El rol del usuario no puede ejecutar la operación (por ejemplo, un `admin_tenant` en la ruta de plataforma).
       content:
         application/problem+json:
           schema:
