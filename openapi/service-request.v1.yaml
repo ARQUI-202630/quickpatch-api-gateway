@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — ServiceRequest API
-  version: 1.4.0
+  version: 1.5.0
   description: |
     Contrato REST de ServiceRequest Service (DD, sección 8.1).
 
@@ -24,6 +24,12 @@ info:
     (`GET /v1/admin/service-requests/summary`). El `admin_plataforma` consulta solo los conteos de cada tenant
     (`GET /v1/platform/service-requests/summary`), sin ver solicitudes ni datos de los clientes (DD 10.4, DEP-15).
     El panel consulta como máximo una vez por minuto.
+
+    **1.5.0** (compatible): cancelación antes de iniciar el servicio (RF-36, SCRUM-472). El cliente dueño y el
+    `admin_tenant` cancelan con `POST /v1/service-requests/{id}/cancel` y un motivo obligatorio; desde
+    `en_progreso` responde `409 transicion-invalida` (RN-SR7). ServiceRequest publica `service-request.cancelled`
+    y `service-request.status-changed` (quickpatch-kafka v0.5.0). El detalle agrega `cancelledAt` y
+    `cancellationReason`, opcionales.
 
     - **Proveedor:** ServiceRequest Service.
     - **Consumidores:** app móvil (cliente y técnico), panel web (administradores, desde 1.4.0) y API Gateway.
@@ -290,6 +296,65 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '404':
           $ref: '#/components/responses/NotFound'
+  /v1/service-requests/{id}/cancel:
+    post:
+      tags: [service-requests]
+      operationId: cancelServiceRequest
+      summary: Cancelar una solicitud antes de iniciar el servicio
+      description: |
+        Cancela la solicitud con un motivo obligatorio (RF-36, DD 8.3.9). Desde 1.5.0.
+
+        - **Quién:** el `cliente` que la creó, o el `admin_tenant` de su tenant (RN-SR8). Una solicitud de otro
+          cliente o de otro tenant responde `404`, para no revelar su existencia. Otro rol responde `403`.
+        - **Cuándo:** desde `buscando_tecnico`, `en_espera`, `asignado`, `cotizado` o `cotizacion_aceptada`.
+          Desde `en_progreso`, `completado`, `pagado` o `cancelado` responde `409 transicion-invalida` (RN-SR7).
+        - **Efectos:** guarda `cancelledAt`, el motivo y quién canceló; publica `service-request.cancelled`,
+          para que Matching retire la oferta pendiente y libere al técnico (RN-M5, RN-M6), y
+          `service-request.status-changed`, para el aviso en tiempo real al cliente, al técnico asignado y al
+          panel. La cancelación de un `admin_tenant` queda en la auditoría (`cancelar_solicitud_admin`).
+        - El motivo es un dato del usuario: no se escribe en los logs.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: id
+          in: path
+          required: true
+          description: Identificador de la solicitud.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelServiceRequest'
+            example:
+              reason: Ya no necesito el servicio.
+      responses:
+        '200':
+          description: Solicitud cancelada.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelledServiceRequest'
+              example:
+                id: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+                status: cancelado
+                cancelledAt: '2026-10-18T16:20:00Z'
+                cancelledByType: cliente
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/InvalidTransition'
   /v1/technicians/me/service-requests:
     get:
       tags: [technicians]
@@ -601,6 +666,15 @@ components:
             - $ref: '#/components/schemas/RequestClient'
           nullable: true
           description: Contacto del cliente; solo para el técnico asignado entre `asignado` y `completado` (RN-SR13), `null` para el cliente. Desde 1.1.0.
+        cancelledAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Momento de la cancelación; `null` si no se canceló. Desde 1.5.0.
+        cancellationReason:
+          type: string
+          nullable: true
+          description: Motivo de la cancelación (RF-36); `null` si no se canceló. Desde 1.5.0.
     AssignedTechnician:
       type: object
       required: [id, fullName]
@@ -756,6 +830,35 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/TenantServiceRequestSummary'
+    CancelServiceRequest:
+      type: object
+      description: Cuerpo de la cancelación (RF-36). Desde 1.5.0.
+      required: [reason]
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          minLength: 5
+          maxLength: 500
+          description: Motivo de la cancelación, sin espacios al inicio ni al final.
+    CancelledServiceRequest:
+      type: object
+      description: Resultado de la cancelación (DD 8.3.9). Desde 1.5.0.
+      required: [id, status, cancelledAt, cancelledByType]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [cancelado]
+        cancelledAt:
+          type: string
+          format: date-time
+        cancelledByType:
+          type: string
+          enum: [cliente, admin_tenant]
+          description: Quién canceló (RN-SR8). `sistema` solo aparece en el evento (RN-Q6, RN-Q7).
     Problem:
       type: object
       description: Detalle de error según RFC 9457.
@@ -817,6 +920,19 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
+    InvalidTransition:
+      description: |
+        El estado actual de la solicitud no admite la acción (`problems/transicion-invalida`): por ejemplo,
+        cancelar desde `en_progreso`, `completado`, `pagado` o `cancelado` (RN-SR7). Desde 1.5.0.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: https://quickpatch.internal/problems/transicion-invalida
+            title: La solicitud ya no se puede cancelar
+            status: 409
+            detail: El servicio ya inició.
     BusinessRuleViolation:
       description: |
         Los datos son válidos pero violan una regla de negocio:
