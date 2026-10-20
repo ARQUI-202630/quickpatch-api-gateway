@@ -31,10 +31,10 @@ nginx/     Configuración de Nginx del gateway (VM1) para producción, QA y Graf
 
 |API|Versión|Proveedor|Consumidores|Archivo|
 |---|---|---|---|---|
-|ServiceRequest|1.7.0|ServiceRequest|Mobile (cliente y técnico) y panel web (administradores)|[service-request.v1.yaml](openapi/service-request.v1.yaml)|
-|Catalog|1.2.0|Catalog|Mobile, panel Angular|[catalog.v1.yaml](openapi/catalog.v1.yaml)|
+|ServiceRequest|1.8.0|ServiceRequest|Mobile (cliente y técnico) y panel web (administradores)|[service-request.v1.yaml](openapi/service-request.v1.yaml)|
+|Catalog|1.3.0|Catalog|Mobile, panel Angular|[catalog.v1.yaml](openapi/catalog.v1.yaml)|
 |Identity|1.7.0|Identity|Mobile, panel Angular|[identity.v1.yaml](openapi/identity.v1.yaml)|
-|Matching|1.0.0|Matching|Mobile (técnico)|[matching.v1.yaml](openapi/matching.v1.yaml)|
+|Matching|1.1.0|Matching|Mobile (técnico)|[matching.v1.yaml](openapi/matching.v1.yaml)|
 |Communication (buzón de notificaciones, ADR-024)|1.1.0|Communication|Mobile|[communication.v1.yaml](openapi/communication.v1.yaml)|
 
 **Contratos internos.** Los llaman otros servicios dentro del clúster; no pasan por el gateway ni tienen ruta en el Ingress (prefijo `/internal`). El servicio que llama reenvía el JWT del usuario.

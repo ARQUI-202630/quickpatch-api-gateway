@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — ServiceRequest API
-  version: 1.7.0
+  version: 1.8.0
   description: |
     Contrato REST de ServiceRequest Service (DD, sección 8.1).
 
@@ -45,6 +45,12 @@ info:
     El detalle agrega `startedAt` y `completedAt`, opcionales. ServiceRequest publica `service-request.started` y
     `service-request.completed` (quickpatch-kafka v0.7.0).
 
+    **1.8.0** (compatible): lecturas de referencia (ADR-025). El gateway solo tiene REST hacia Identity,
+    ServiceRequest y Payments, así que ServiceRequest sirve desde sus copias las categorías activas
+    (`GET /v1/service-requests/categories`, con o sin token) y las localidades de Bogotá
+    (`GET /v1/service-requests/localities`). Reemplazan a `GET /v1/catalog/categories` y `GET /v1/localities`,
+    que quedan obsoletas.
+
     - **Proveedor:** ServiceRequest Service.
     - **Consumidores:** app móvil (cliente y técnico), panel web (administradores, desde 1.4.0) y API Gateway.
     - El tenant y el cliente se toman de los claims del JWT (`tenant_id`, `sub`); nunca del cuerpo de la petición.
@@ -64,6 +70,8 @@ tags:
     description: Cotizaciones de una solicitud (desde 1.6.0).
   - name: evidence
     description: Fotos de evidencia del servicio (desde 1.7.0).
+  - name: references
+    description: Catálogos de referencia para crear una solicitud (desde 1.8.0, ADR-025).
   - name: technicians
     description: Solicitudes vistas por el técnico.
   - name: admin
@@ -204,6 +212,85 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '422':
           $ref: '#/components/responses/BusinessRuleViolation'
+  /v1/service-requests/categories:
+    get:
+      tags: [references]
+      operationId: listServiceRequestCategories
+      summary: Listar las categorías activas del tenant
+      description: |
+        Categorías con las que se puede crear una solicitud, ordenadas por nombre (RF-07, RN-SR10). Desde 1.8.0
+        (ADR-025): ServiceRequest las sirve desde su réplica de `catalog.category-changed`, porque el gateway solo
+        tiene REST hacia Identity, ServiceRequest y Payments. Reemplaza a `GET /v1/catalog/categories`.
+
+        - **Con JWT:** las del tenant del token. Un token inválido o vencido responde `401`; nunca cae al canal.
+        - **Sin JWT** (registro de técnicos, RF-02): las del tenant del canal según la configuración del servicio
+          (`X-Channel-Id`, RN-U5). Nunca se acepta un tenant en la petición. Un canal sin tenant responde `503`.
+        - Solo se exponen `id`, `name` y `description`. La réplica se actualiza por eventos, así que un cambio en
+          Catalog tarda unos segundos en verse.
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: X-Channel-Id
+          in: header
+          required: false
+          description: Canal de la app (por ejemplo `quickpatch-mobile`). Lo envían las apps en las peticiones sin token.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Categorías activas del tenant.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CategoryReference'
+              example:
+                - id: 3f1c2a4e-8d7b-4c1a-9e2f-5b6a7c8d9e01
+                  name: Plomería
+                  description: Fugas, tuberías y grifería.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: El canal no tiene tenant configurado.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /v1/service-requests/localities:
+    get:
+      tags: [references]
+      operationId: listServiceRequestLocalities
+      summary: Listar las localidades de Bogotá
+      description: |
+        Las 20 localidades de Bogotá D.C. (R6), ordenadas por código, sin su polígono. Desde 1.8.0 (ADR-025):
+        ServiceRequest las sirve desde su copia del catálogo de Matching (P-09). Reemplaza a `GET /v1/localities`.
+        Es un catálogo de referencia igual para todos los tenants, por eso no requiere token.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Localidades de Bogotá.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Locality'
+              example:
+                - code: '01'
+                  name: Usaquén
+                - code: '02'
+                  name: Chapinero
   /v1/service-requests/location-preview:
     post:
       tags: [service-requests]
@@ -1040,7 +1127,7 @@ components:
             su dirección. No incluye el número de casa cuando Nominatim no lo encontró.
     Locality:
       type: object
-      description: Localidad de Bogotá que contiene el punto; los mismos códigos de `GET /v1/localities` (Matching).
+      description: Localidad de Bogotá que contiene el punto; los mismos códigos de `GET /v1/service-requests/localities`.
       required: [code, name]
       properties:
         code:
@@ -1459,6 +1546,21 @@ components:
           maxItems: 10
           items:
             $ref: '#/components/schemas/Evidence'
+    CategoryReference:
+      type: object
+      description: Categoría para crear una solicitud (desde 1.8.0), igual al esquema `Category` de Catalog.
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 255
+          nullable: true
     Problem:
       type: object
       description: Detalle de error según RFC 9457.

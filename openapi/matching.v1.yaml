@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Matching API
-  version: 1.0.0
+  version: 1.1.0
   description: |
     Contrato REST de Matching Service (DD V4, secciones 8.2.3, 8.3.5 y 8.3.6): localidades de Bogotá,
     disponibilidad y cobertura del técnico (RF-13, SCRUM-33) y ofertas de asignación (RF-10, SCRUM-30).
@@ -37,7 +37,13 @@ paths:
       tags: [localities]
       operationId: listLocalities
       summary: Listar las localidades de Bogotá
+      deprecated: true
       description: |
+        **Obsoleta desde 1.1.0 (ADR-025):** las apps usan `GET /v1/service-requests/localities` (service-request
+        1.8.0), que sirve la misma lista desde la copia de ServiceRequest (P-09). La ruta se retira del gateway cuando
+        la app ya no la use. Disponibilidad, cobertura y ofertas siguen en Matching como excepción del ADR-025: el
+        técnico necesita la respuesta al instante.
+
         Devuelve las 20 localidades de Bogotá D.C. (R6), ordenadas por código, sin su polígono (DD 5.18).
         Es un catálogo de referencia igual para todos los tenants, por eso no requiere token.
       security: []
