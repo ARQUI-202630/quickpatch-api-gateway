@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Catalog API
-  version: 1.2.0
+  version: 1.3.0
   description: |
     Contrato REST de Catalog Service (DD, sección 8.2.2).
 
@@ -37,7 +37,12 @@ paths:
       tags: [categories]
       operationId: listCategories
       summary: Listar las categorías activas del tenant
+      deprecated: true
       description: |
+        **Obsoleta desde 1.3.0 (ADR-025):** el gateway solo tiene REST hacia Identity, ServiceRequest y Payments. Las
+        apps usan `GET /v1/service-requests/categories` (service-request 1.8.0), que sirve la misma lista desde la
+        réplica de `catalog.category-changed`. La ruta se retira del gateway cuando la app y el panel ya no la usen.
+
         Devuelve las categorías con `active = true`, ordenadas por nombre. Con JWT, del tenant del token. Sin
         token (registro de técnicos, RF-02), del tenant del canal: el servicio lo toma de su configuración y no
         acepta ningún tenant en la petición. Solo se exponen `id`, `name` y `description`.
