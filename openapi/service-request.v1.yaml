@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — ServiceRequest API
-  version: 1.6.0
+  version: 1.7.0
   description: |
     Contrato REST de ServiceRequest Service (DD, sección 8.1).
 
@@ -37,6 +37,14 @@ info:
     (`409 limite-de-cotizaciones`); la cotización vence (RN-Q8) y entonces la solicitud se cancela (RN-Q6).
     ServiceRequest publica `service-request.quoted`, `quote-accepted` y `quote-rejected` (quickpatch-kafka v0.6.0).
 
+    **1.7.0** (compatible): ejecución del servicio con evidencia (RF-14, RF-15, SCRUM-35). El técnico asignado inicia
+    (`POST /v1/service-requests/{id}/start`, solo desde `cotizacion_aceptada`, RN-SR6), sube fotos con
+    `POST .../evidence` (JPEG, PNG o WebP de hasta 10 MB, como máximo 10 por solicitud, RN-E4) y completa con
+    `POST .../complete`, que exige al menos una foto (`422 evidencia-requerida`, RN-SR3). El cliente, el técnico y el
+    `admin_tenant` listan y descargan las fotos; el archivo vive en Garage y su ubicación no se expone (RN-E3).
+    El detalle agrega `startedAt` y `completedAt`, opcionales. ServiceRequest publica `service-request.started` y
+    `service-request.completed` (quickpatch-kafka v0.7.0).
+
     - **Proveedor:** ServiceRequest Service.
     - **Consumidores:** app móvil (cliente y técnico), panel web (administradores, desde 1.4.0) y API Gateway.
     - El tenant y el cliente se toman de los claims del JWT (`tenant_id`, `sub`); nunca del cuerpo de la petición.
@@ -54,6 +62,8 @@ tags:
     description: Solicitudes de servicio técnico.
   - name: quotes
     description: Cotizaciones de una solicitud (desde 1.6.0).
+  - name: evidence
+    description: Fotos de evidencia del servicio (desde 1.7.0).
   - name: technicians
     description: Solicitudes vistas por el técnico.
   - name: admin
@@ -549,6 +559,215 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/InvalidTransition'
+  /v1/service-requests/{id}/start:
+    post:
+      tags: [service-requests]
+      operationId: startService
+      summary: Iniciar el servicio
+      description: |
+        El técnico asignado inicia el servicio (RF-14, DD 8.2.4). Desde 1.7.0. No tiene cuerpo.
+
+        - **Quién:** solo el técnico asignado. Otro técnico, o una solicitud de otro tenant, responde `404`. Otro rol
+          responde `403`.
+        - **Cuándo:** solo desde `cotizacion_aceptada` (RN-SR6); en otro estado, `409 transicion-invalida`.
+        - **Efectos:** la solicitud pasa a `en_progreso` y guarda `startedAt`. ServiceRequest publica
+          `service-request.started` y `service-request.status-changed` (quickpatch-kafka v0.7.0).
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/ServiceRequestId'
+      responses:
+        '200':
+          description: Servicio iniciado.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StartedServiceRequest'
+              example:
+                id: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+                status: en_progreso
+                startedAt: '2026-10-03T16:05:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/InvalidTransition'
+  /v1/service-requests/{id}/evidence:
+    get:
+      tags: [evidence]
+      operationId: listEvidence
+      summary: Listar las evidencias de una solicitud
+      description: |
+        Metadatos de las fotos de evidencia, de la más antigua a la más reciente (RF-15, DD 8.3.10). Desde 1.7.0.
+
+        - **Quién:** el `cliente` que creó la solicitud, el técnico asignado o el `admin_tenant` de su tenant. Una
+          solicitud de otro cliente, de otro tenant o asignada a otro técnico responde `404`. Otro rol responde `403`.
+        - No incluye la ubicación del archivo en el almacenamiento (RN-E3): cada foto se descarga con
+          `GET .../evidence/{evidenceId}/file`.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/ServiceRequestId'
+      responses:
+        '200':
+          description: Evidencias de la solicitud.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvidenceList'
+              example:
+                items:
+                  - id: 5a4b3c2d-1111-4222-8333-444455556666
+                    uploadedAt: '2026-10-03T16:40:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [evidence]
+      operationId: uploadEvidence
+      summary: Subir una foto de evidencia
+      description: |
+        El técnico asignado sube una foto del trabajo (RF-15, DD 8.3.10). Desde 1.7.0. Una foto por petición.
+
+        - **Quién:** solo el técnico asignado (RN-E2). Otro técnico, o una solicitud de otro tenant, responde `404`.
+          Otro rol responde `403`.
+        - **Cuándo:** solo con la solicitud en `en_progreso`; si no, `409 transicion-invalida`. Como máximo 10 fotos
+          por solicitud: la undécima responde `409 limite-de-evidencias` (RN-E4).
+        - **Archivo:** JPEG, PNG o WebP de hasta 10 MB. El tipo se valida por el contenido del archivo, no por su
+          nombre ni por el `Content-Type` de la parte; otro tipo, un archivo vacío o uno más grande responde `400`
+          con el error en `file`.
+        - **Efectos:** el archivo se guarda en Garage (RN-E3) y la solicitud ya se puede completar (RN-E1).
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/ServiceRequestId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/UploadEvidence'
+            encoding:
+              file:
+                contentType: image/jpeg, image/png, image/webp
+      responses:
+        '201':
+          description: Evidencia guardada.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Evidence'
+              example:
+                id: 5a4b3c2d-1111-4222-8333-444455556666
+                uploadedAt: '2026-10-03T16:40:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/EvidenceConflict'
+  /v1/service-requests/{id}/evidence/{evidenceId}/file:
+    get:
+      tags: [evidence]
+      operationId: downloadEvidence
+      summary: Descargar una foto de evidencia
+      description: |
+        Devuelve el archivo de la evidencia con su `Content-Type` (DD 8.3.10). Desde 1.7.0. ServiceRequest lo
+        recupera de Garage; el cliente nunca recibe la ubicación del objeto (RN-E3).
+
+        - **Quién:** los mismos que el listado. Una evidencia de otra solicitud, de otro tenant o que no existe
+          responde `404`.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/ServiceRequestId'
+        - $ref: '#/components/parameters/EvidenceId'
+      responses:
+        '200':
+          description: Archivo de la evidencia.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+            Cache-Control:
+              description: '`private, max-age=3600`: el archivo de una evidencia no cambia.'
+              schema:
+                type: string
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/service-requests/{id}/complete:
+    post:
+      tags: [service-requests]
+      operationId: completeService
+      summary: Marcar el servicio como completado
+      description: |
+        El técnico asignado completa el servicio (RF-15, DD 8.3.11). Desde 1.7.0. No tiene cuerpo.
+
+        - **Quién:** solo el técnico asignado. Otro técnico, o una solicitud de otro tenant, responde `404`. Otro rol
+          responde `403`.
+        - **Cuándo:** solo desde `en_progreso`; si no, `409 transicion-invalida`. Sin ninguna evidencia responde
+          `422 evidencia-requerida` (RN-SR3, RN-E1); el conteo se hace en la misma transacción que cambia el estado.
+        - **Efectos:** la solicitud pasa a `completado` y guarda `completedAt`. ServiceRequest publica
+          `service-request.completed`, con el total de la cotización aceptada para el pago (RN-P4) y para que
+          Matching libere al técnico (RN-M6), y `service-request.status-changed`.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/ServiceRequestId'
+      responses:
+        '200':
+          description: Servicio completado.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompletedServiceRequest'
+              example:
+                id: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+                status: completado
+                completedAt: '2026-10-03T17:10:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/InvalidTransition'
+        '422':
+          $ref: '#/components/responses/EvidenceRequired'
   /v1/technicians/me/service-requests:
     get:
       tags: [technicians]
@@ -739,6 +958,14 @@ components:
       schema:
         type: string
         format: uuid
+    EvidenceId:
+      name: evidenceId
+      in: path
+      required: true
+      description: Identificador de la evidencia.
+      schema:
+        type: string
+        format: uuid
   headers:
     CorrelationId:
       description: Identificador de correlación de la petición.
@@ -885,6 +1112,16 @@ components:
           type: string
           nullable: true
           description: Motivo de la cancelación (RF-36); `null` si no se canceló. Desde 1.5.0.
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Inicio del servicio; `null` antes de `en_progreso`. Desde 1.7.0.
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Fin del servicio; `null` antes de `completado`. Desde 1.7.0.
     AssignedTechnician:
       type: object
       required: [id, fullName]
@@ -1166,6 +1403,62 @@ components:
           minimum: 0
           maximum: 2
           description: Cotizaciones que el técnico todavía puede emitir (3 menos las emitidas).
+    StartedServiceRequest:
+      type: object
+      description: Resultado de iniciar el servicio. Desde 1.7.0.
+      required: [id, status, startedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [en_progreso]
+        startedAt:
+          type: string
+          format: date-time
+    CompletedServiceRequest:
+      type: object
+      description: Resultado de completar el servicio (DD 8.3.11). Desde 1.7.0.
+      required: [id, status, completedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [completado]
+        completedAt:
+          type: string
+          format: date-time
+    UploadEvidence:
+      type: object
+      required: [file]
+      properties:
+        file:
+          type: string
+          format: binary
+          description: Foto JPEG, PNG o WebP de hasta 10 MB.
+    Evidence:
+      type: object
+      description: Metadatos de una foto de evidencia (DD 8.3.10). Desde 1.7.0.
+      required: [id, uploadedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        uploadedAt:
+          type: string
+          format: date-time
+    EvidenceList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/Evidence'
     Problem:
       type: object
       description: Detalle de error según RFC 9457.
@@ -1230,7 +1523,8 @@ components:
     InvalidTransition:
       description: |
         El estado actual de la solicitud no admite la acción (`problems/transicion-invalida`): por ejemplo,
-        cancelar desde `en_progreso`, `completado`, `pagado` o `cancelado` (RN-SR7). Desde 1.5.0.
+        cancelar desde `en_progreso`, `completado`, `pagado` o `cancelado` (RN-SR7), o iniciar fuera de
+        `cotizacion_aceptada` y completar fuera de `en_progreso` (desde 1.7.0). Desde 1.5.0.
       content:
         application/problem+json:
           schema:
@@ -1260,6 +1554,36 @@ components:
                 type: https://quickpatch.internal/problems/limite-de-cotizaciones
                 title: La solicitud ya tiene 3 cotizaciones
                 status: 409
+    EvidenceConflict:
+      description: |
+        No se puede subir la foto (desde 1.7.0): `transicion-invalida` si la solicitud no está en `en_progreso`, o
+        `limite-de-evidencias` si ya tiene 10 (RN-E4).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            transicionInvalida:
+              value:
+                type: https://quickpatch.internal/problems/transicion-invalida
+                title: La solicitud no admite evidencias
+                status: 409
+                detail: La solicitud está en 'cotizacion_aceptada' y la operación requiere 'en_progreso'.
+            limiteDeEvidencias:
+              value:
+                type: https://quickpatch.internal/problems/limite-de-evidencias
+                title: La solicitud ya tiene 10 evidencias
+                status: 409
+    EvidenceRequired:
+      description: Se intenta completar sin ninguna evidencia (`problems/evidencia-requerida`, RN-SR3). Desde 1.7.0.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: https://quickpatch.internal/problems/evidencia-requerida
+            title: Sube al menos una foto del trabajo
+            status: 422
     BusinessRuleViolation:
       description: |
         Los datos son válidos pero violan una regla de negocio:
