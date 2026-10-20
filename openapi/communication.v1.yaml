@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Communication API
-  version: 1.1.0
+  version: 1.2.0
   description: |
     Contrato REST de Communication Service: el **buzón de notificaciones** dentro de la app (RIE-03,
     ADR-024, SCRUM-455). Complementa el canal en tiempo real (`asyncapi/realtime.v1.yaml`, ADR-023): el
@@ -20,6 +20,10 @@ info:
     **1.1.0 (SCRUM-472):** tipo `solicitud-cancelada`. Los avisos de estado salen de
     `service-request.status-changed` (SCRUM-466) y no de los eventos de Matching. Cambio compatible: solo agrega un
     valor a `NotificationType`, que pasa a `x-extensible-enum` porque la app ignora los tipos que no conoce.
+
+    **1.2.0 (SCRUM-487):** tipos `cotizacion-recibida`, `cotizacion-aceptada` y `cotizacion-rechazada`, que salen de los
+    eventos de la cotización (quickpatch-kafka v0.6.0). `tecnico-asignado` y `solicitud-asignada` quedan solo para la
+    llegada a `asignado` desde `buscando_tecnico`: el regreso a `asignado` al rechazar una cotización no los repite.
   contact:
     name: Equipo QUICKPATCH
     url: https://github.com/ARQUI-202630/quickpatch
@@ -172,17 +176,21 @@ components:
         |`type`|Evento|Destinatario|
         |---|---|---|
         |`solicitud-creada`|`service-request.created`|Cliente dueño|
-        |`tecnico-asignado`|`service-request.status-changed` a `asignado`|Cliente dueño|
-        |`solicitud-asignada`|`service-request.status-changed` a `asignado`|Técnico asignado|
+        |`tecnico-asignado`|`service-request.status-changed` de `buscando_tecnico` a `asignado`|Cliente dueño|
+        |`solicitud-asignada`|`service-request.status-changed` de `buscando_tecnico` a `asignado`|Técnico asignado|
         |`sin-tecnico-disponible`|`service-request.status-changed` a `en_espera`|Cliente dueño|
         |`busqueda-reanudada`|`service-request.status-changed` de `en_espera` a `buscando_tecnico`|Cliente dueño|
         |`solicitud-cancelada`|`service-request.status-changed` a `cancelado` (1.1.0)|Cliente dueño y, si lo hay, técnico asignado|
+        |`cotizacion-recibida`|`service-request.quoted` (1.2.0)|Cliente dueño, con el total y el vencimiento|
+        |`cotizacion-aceptada`|`service-request.quote-accepted` (1.2.0)|Técnico asignado: ya puede iniciar|
+        |`cotizacion-rechazada`|`service-request.quote-rejected` (1.2.0)|Técnico asignado, con las cotizaciones que le quedan|
         |`oferta-recibida`|`matching.offer-created`|Técnico de la oferta|
         |`registro-recibido`|`technician.registered`|Técnico o proveedor registrado|
         |`verificacion-actualizada`|`technician.verification-changed`|Técnico o proveedor verificado|
 
         El estado de la solicitud sale de su dueño, ServiceRequest, que publica `status-changed` solo cuando aplicó el
-        cambio (SCRUM-466). La cotización, el inicio, el cierre y el pago se agregan con sus historias.
+        cambio (SCRUM-466). Los cambios a `cotizado` y `cotizacion_aceptada` no crean notificación de estado: la crea el
+        evento de la cotización (1.2.0). El inicio, el cierre y el pago se agregan con sus historias.
         `solicitud-cancelada` no incluye el motivo: la app lo muestra desde el detalle de la solicitud.
 
         Desde 1.1.0 es `x-extensible-enum`: la lista puede crecer sin romper a los clientes, que ignoran los tipos
@@ -197,6 +205,9 @@ components:
         - registro-recibido
         - verificacion-actualizada
         - solicitud-cancelada
+        - cotizacion-recibida
+        - cotizacion-aceptada
+        - cotizacion-rechazada
     Notification:
       type: object
       required: [id, type, title, message, serviceRequestId, createdAt, readAt]
