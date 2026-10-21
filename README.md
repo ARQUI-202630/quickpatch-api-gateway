@@ -36,7 +36,7 @@ nginx/     Configuración de Nginx del gateway (VM1) para producción, QA y Graf
 |Identity|1.7.0|Identity|Mobile, panel Angular|[identity.v1.yaml](openapi/identity.v1.yaml)|
 |Matching|1.1.0|Matching|Mobile (técnico)|[matching.v1.yaml](openapi/matching.v1.yaml)|
 |Communication (buzón de notificaciones, ADR-024)|1.1.0|Communication|Mobile|[communication.v1.yaml](openapi/communication.v1.yaml)|
-|Payments (pago de la solicitud con la pasarela simulada, ADR-009)|1.0.0|Payments|Mobile (cliente y empresa)|[payments.v1.yaml](openapi/payments.v1.yaml)|
+|Payments (pago de la solicitud con la pasarela simulada, ADR-009, y su comprobante)|1.1.0|Payments|Mobile (cliente y empresa) y administrador del tenant|[payments.v1.yaml](openapi/payments.v1.yaml)|
 
 **Contratos internos.** Los llaman otros servicios dentro del clúster; no pasan por el gateway ni tienen ruta en el Ingress (prefijo `/internal`). El servicio que llama reenvía el JWT del usuario.
 
