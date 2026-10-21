@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — ServiceRequest API
-  version: 1.8.0
+  version: 1.9.0
   description: |
     Contrato REST de ServiceRequest Service (DD, sección 8.1).
 
@@ -51,9 +51,18 @@ info:
     (`GET /v1/service-requests/localities`). Reemplazan a `GET /v1/catalog/categories` y `GET /v1/localities`,
     que quedan obsoletas.
 
+    **1.9.0** (compatible): solicitud de empresa (RF-08, SCRUM-28). El `empresa_contacto` crea solicitudes a nombre
+    de su empresa con un nombre de sede opcional (`siteName`). `clientType` (`hogar` o `empresa`) sale del rol del
+    token y `companyId` del claim `company_id` (RN-SR12); la app no envía ninguno. Los demás `empresa_contacto` de la
+    misma empresa ven la solicitud en el detalle y en la lista (RN-SR14). `GET /v1/service-requests` se abre al
+    `cliente` (sus solicitudes) y al `empresa_contacto` (las de su empresa), y sus elementos suman `clientType`,
+    `companyId`, `siteName` y `description`, con lo que el panel distingue las solicitudes de empresa. Las acciones
+    sobre la solicitud (cancelar, responder la cotización, calificar) siguen siendo de quien la creó.
+
     - **Proveedor:** ServiceRequest Service.
     - **Consumidores:** app móvil (cliente y técnico), panel web (administradores, desde 1.4.0) y API Gateway.
-    - El tenant y el cliente se toman de los claims del JWT (`tenant_id`, `sub`); nunca del cuerpo de la petición.
+    - El tenant, el cliente y la empresa se toman de los claims del JWT (`tenant_id`, `sub`, `company_id`); nunca del
+      cuerpo de la petición.
     - Los errores se devuelven como `application/problem+json` (RFC 9457).
   contact:
     name: Equipo QUICKPATCH
@@ -85,13 +94,16 @@ paths:
     get:
       tags: [admin]
       operationId: listServiceRequests
-      summary: Listar las solicitudes del tenant (administrador del tenant)
+      summary: Listar solicitudes
       description: |
-        Solicitudes del tenant del token, de la más reciente a la más antigua (RF-18, SCRUM-38). Desde 1.4.0
-        solo el rol `admin_tenant`; la lista del cliente (DD 8.2.4) llegará en otra versión.
+        De la más reciente a la más antigua. Lo que ve cada rol:
 
-        No trae la dirección, la ubicación ni los datos de contacto: el panel opera la solicitud por su
-        estado y sus identificadores. Una solicitud de otro tenant nunca aparece (RLS, RF-04).
+        - `admin_tenant` (1.4.0): todas las del tenant del token (RF-18, SCRUM-38).
+        - `cliente` (1.9.0): las que creó (RF-11).
+        - `empresa_contacto` (1.9.0): las de su empresa, las haya creado él u otro usuario de la empresa (RN-SR14).
+
+        No trae la dirección, la ubicación ni los datos de contacto: el detalle los da a quien corresponda. Una
+        solicitud de otro tenant nunca aparece (RLS, RF-04).
       parameters:
         - $ref: '#/components/parameters/CorrelationId'
         - name: status
@@ -136,6 +148,10 @@ paths:
                     technicianId: 9d1e2f3a-4b5c-4d6e-8f7a-0b1c2d3e4f5a
                     createdAt: '2026-10-14T15:02:11Z'
                     assignedAt: '2026-10-14T15:04:40Z'
+                    clientType: empresa
+                    companyId: 5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d
+                    siteName: Sede Chapinero
+                    description: El aire acondicionado de la sala de juntas no enfría.
                 page: 1
                 size: 20
                 totalItems: 1
@@ -151,7 +167,9 @@ paths:
       summary: Crear una solicitud de servicio
       description: |
         Crea una solicitud en estado `buscando_tecnico` (RF-07) y publica el evento
-        `service-request.created` mediante Outbox (ADR-007). Solo el rol `cliente` puede crearla.
+        `service-request.created` mediante Outbox (ADR-007). La crean el `cliente` y, desde 1.9.0, el
+        `empresa_contacto` a nombre de su empresa (RF-08): `clientType` es `empresa` y `companyId` sale del claim
+        `company_id` (RN-SR12). La solicitud de empresa sigue el mismo flujo de matching que la de hogar.
 
         Reglas: la categoría debe existir y estar activa en el tenant del usuario (RN-SR10) y la
         ubicación debe estar dentro del área de cobertura de Bogotá D.C. (RN-SR1, RN-SR9).
@@ -184,6 +202,16 @@ paths:
                     latitude: 4.6486
                     longitude: -74.063
                   addressText: Calle 63 # 9-45, apartamento 502, Chapinero
+              empresa:
+                summary: De una empresa, con el nombre de la sede (1.9.0)
+                value:
+                  categoryId: 3f1c2a4e-8d7b-4c1a-9e2f-5b6a7c8d9e01
+                  description: El aire acondicionado de la sala de juntas no enfría.
+                  location:
+                    latitude: 4.6486
+                    longitude: -74.063
+                  addressText: Carrera 7 # 71-21, piso 8, recepción
+                  siteName: Sede Chapinero
               soloDireccion:
                 summary: Solo con la dirección (1.3.0); ServiceRequest la geocodifica
                 value:
@@ -360,7 +388,8 @@ paths:
         técnico responde `404`, para no revelar su existencia.
 
         **Cliente dueño:** recibe la solicitud completa; `technician` aparece desde `asignado` y `client`
-        siempre es `null`.
+        siempre es `null`. Desde 1.9.0, en una solicitud de empresa los demás `empresa_contacto` de la misma
+        empresa la ven igual que quien la creó (RN-SR14); un `empresa_contacto` de otra empresa recibe `404`.
 
         **Técnico asignado** (1.1.0): solo mientras la solicitud está entre `asignado` y `completado`
         (RN-SR13). Recibe la dirección, la ubicación y el bloque `client` con el nombre y el teléfono del
@@ -1102,6 +1131,18 @@ components:
             apartamento, indicaciones). La ubicación sirve para el matching; la dirección, para
             que el técnico llegue. Sin `location`, es lo que se geocodifica: debe incluir la
             nomenclatura de la calle (por ejemplo, `Calle 63 # 9-45`).
+        siteName:
+          type: string
+          minLength: 2
+          maxLength: 100
+          nullable: true
+          description: |
+            Desde 1.9.0. Nombre de la sede de la empresa (por ejemplo, `Sede Chapinero`). Solo para el
+            `empresa_contacto`: si lo envía un `cliente`, responde `400` en `siteName`.
+    ClientType:
+      type: string
+      description: Tipo de cliente de la solicitud, según el rol de quien la creó (RN-SR12). Desde 1.9.0.
+      enum: [hogar, empresa]
     LocationPreviewRequest:
       type: object
       required: [addressText]
@@ -1209,6 +1250,17 @@ components:
           format: date-time
           nullable: true
           description: Fin del servicio; `null` antes de `completado`. Desde 1.7.0.
+        clientType:
+          $ref: '#/components/schemas/ClientType'
+        companyId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Empresa de la solicitud; `null` en las de hogar. Desde 1.9.0.
+        siteName:
+          type: string
+          nullable: true
+          description: Sede de la empresa; `null` si no se indicó o es de hogar. Desde 1.9.0.
     AssignedTechnician:
       type: object
       required: [id, fullName]
@@ -1269,7 +1321,9 @@ components:
           type: integer
     AdminServiceRequest:
       type: object
-      description: Solicitud en la lista del administrador del tenant, sin dirección, ubicación ni contacto. Desde 1.4.0.
+      description: |
+        Solicitud en la lista (`GET /v1/service-requests`), sin dirección, ubicación ni contacto. Desde 1.4.0 para el
+        `admin_tenant` y desde 1.9.0 también para el `cliente` y el `empresa_contacto`.
       required: [id, status, categoryId, clientId, technicianId, createdAt, assignedAt]
       properties:
         id:
@@ -1296,6 +1350,20 @@ components:
           type: string
           format: date-time
           nullable: true
+        description:
+          type: string
+          description: Descripción del problema. Desde 1.9.0.
+        clientType:
+          $ref: '#/components/schemas/ClientType'
+        companyId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Empresa de la solicitud; `null` en las de hogar. Desde 1.9.0.
+        siteName:
+          type: string
+          nullable: true
+          description: Sede de la empresa. Desde 1.9.0.
     AdminServiceRequestPage:
       type: object
       required: [items, page, size, totalItems]
