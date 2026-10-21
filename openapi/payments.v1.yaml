@@ -1,19 +1,24 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Payments API
-  version: 1.0.0
+  version: 1.1.0
   description: |
-    Contrato REST de Payments Service (DD, secciones 8.2.5 y 8.3.12). Pago de un servicio completado con tarjeta
-    (RF-22, RF-23, SCRUM-42).
+    Contrato REST de Payments Service (DD, secciones 8.2.5, 8.3.12 y 8.3.16). Pago de un servicio completado con
+    tarjeta (RF-22, RF-23, SCRUM-42) y su comprobante (RF-24, SCRUM-44).
 
-    **1.0.0:** estado del pago de una solicitud y pago con un token de la pasarela. El comprobante
-    (`GET /v1/payments/{id}/invoice`, RF-24) y los pagos recibidos del técnico (RF-25) llegan en versiones
-    compatibles con SCRUM-44 y SCRUM-45.
+    **1.0.0:** estado del pago de una solicitud y pago con un token de la pasarela.
+
+    **1.1.0 (compatible):** comprobante del pago aprobado en JSON o PDF (`GET /v1/payments/{id}/invoice`). Es un
+    comprobante de pago **sin validez fiscal**, rotulado como tal: la factura electrónica validada por la DIAN queda
+    fuera del MVP (SRS, contradicción P3, opción a; SAD, killer K14). Los pagos recibidos del técnico (RF-25) llegan
+    en una versión compatible con SCRUM-45.
 
     - **Proveedor:** Payments Service. Las rutas empiezan por `/v1/service-requests/{id}` porque nombran la
       solicitud que se paga, pero las atiende Payments: en k3s las enruta un `IngressRoute` de Traefik por el sufijo
       `/payment` (DD 8.2.5).
-    - **Consumidores:** app móvil Flutter (cliente y usuarios de la empresa cliente).
+    - **Consumidores:** app móvil Flutter (cliente y usuarios de la empresa cliente). El comprobante también lo
+      puede consultar el `admin_tenant` del tenant (DD 8.2.5); su ruta `/v1/payments` la enruta el mismo
+      `IngressRoute` de Payments.
     - **Pasarela:** en el MVP es simulada (ADR-009, modificación del 20 de octubre de 2026). La app cambia la tarjeta
       por un token en el dispositivo; el número, la fecha y el CVV nunca llegan a este servicio (RN-P1, K2).
     - **Cuándo existe el pago:** Payments crea el pago `pendiente` al consumir `service-request.completed`, con el
@@ -36,6 +41,8 @@ servers:
 tags:
   - name: payments
     description: Pago de una solicitud completada.
+  - name: invoices
+    description: Comprobante de un pago aprobado.
 security:
   - bearerAuth: []
 paths:
@@ -184,6 +191,90 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /v1/payments/{id}/invoice:
+    get:
+      tags: [invoices]
+      operationId: getPaymentInvoice
+      summary: Consultar el comprobante de un pago aprobado
+      description: |
+        Comprobante que Payments emitió al aprobar el pago (RF-24), con los datos del servicio, el monto, la fecha y los
+        datos de facturación que el pagador envió al pagar (`billing`). Cuando el pagador facturó con NIT, el
+        comprobante lo incluye (`payer.documentType = NIT`).
+
+        - **Formato:** según `Accept`. `application/json` (o sin `Accept`) devuelve el esquema `Invoice`;
+          `application/pdf` devuelve el PDF, generado al pedirlo con los mismos datos, con
+          `Content-Disposition: attachment; filename="<invoiceNumber>.pdf"`. Otro tipo responde `406`.
+        - **Sin validez fiscal:** el PDF y el JSON (`fiscalValidity = false`) lo rotulan como comprobante de pago, no
+          como factura electrónica (SRS P3, opción a).
+        - **Quién:** el cliente que pagó (o, si la solicitud es de una empresa, el `empresa_contacto` que pagó) y el
+          `admin_tenant` del tenant. Para otro usuario, otro tenant o un pago sin comprobante (no aprobado), el
+          comprobante no existe (`404`); otro rol responde `403`.
+        - El id es el del pago (`paymentId`); la app lo tiene en el `Payment` aprobado.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: id
+          in: path
+          required: true
+          description: Pago aprobado (`paymentId`).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Comprobante del pago.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+            Content-Disposition:
+              description: Solo con `application/pdf`.
+              schema:
+                type: string
+                example: attachment; filename="QP-20261021-1B2C3D4E5F.pdf"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+              example:
+                invoiceId: 8f7e6d5c-4b3a-4291-8f7e-6d5c4b3a2910
+                invoiceNumber: QP-20261021-1B2C3D4E5F
+                paymentId: 1b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b
+                serviceRequestId: 7d1f6a52-0c8e-4f0b-9b8e-2a6c5f3d1e90
+                payer:
+                  name: Inversiones Andinas S.A.S.
+                  documentType: NIT
+                  documentNumber: 900123456-7
+                  email: pagos@andinas.com.co
+                amount: '185000.00'
+                currency: COP
+                concept: Servicio técnico de la solicitud 7d1f6a52-0c8e-4f0b-9b8e-2a6c5f3d1e90
+                issuedAt: '2026-10-21T15:02:10Z'
+                fiscalValidity: false
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: El rol no es `cliente`, `empresa_contacto` ni `admin_tenant` (`problems/no-autorizado`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: |
+            El pago no existe para el usuario del token o no tiene comprobante porque no está aprobado
+            (`problems/no-encontrado`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '406':
+          description: '`Accept` no admite `application/json` ni `application/pdf`.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
 components:
   securitySchemes:
     bearerAuth:
@@ -303,6 +394,45 @@ components:
           format: date-time
           nullable: true
           description: Cuándo quedó `aprobado` o `rechazado`.
+    Invoice:
+      type: object
+      description: Comprobante de un pago aprobado (tabla `invoices`, DD 5.13, RF-24).
+      required:
+        [invoiceId, invoiceNumber, paymentId, serviceRequestId, payer, amount, currency, concept, issuedAt, fiscalValidity]
+      properties:
+        invoiceId:
+          type: string
+          format: uuid
+        invoiceNumber:
+          type: string
+          pattern: '^QP-[0-9]{8}-[0-9A-F]{10}$'
+          description: Número único del comprobante, con la fecha de emisión.
+        paymentId:
+          type: string
+          format: uuid
+        serviceRequestId:
+          type: string
+          format: uuid
+        payer:
+          $ref: '#/components/schemas/Billing'
+        amount:
+          type: string
+          pattern: '^[0-9]+\.[0-9]{2}$'
+          description: Valor pagado, el total de la cotización aceptada.
+        currency:
+          type: string
+          enum: [COP]
+        concept:
+          type: string
+          description: Servicio que se pagó.
+        issuedAt:
+          type: string
+          format: date-time
+          description: Fecha de emisión, la de la aprobación del pago.
+        fiscalValidity:
+          type: boolean
+          enum: [false]
+          description: Siempre `false` en el MVP; el comprobante no es una factura electrónica (SRS P3).
     Problem:
       type: object
       description: Detalle de error según RFC 9457.
