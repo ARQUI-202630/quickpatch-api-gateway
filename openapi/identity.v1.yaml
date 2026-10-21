@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Identity API
-  version: 1.7.0
+  version: 1.8.0
   description: |
     Contrato REST de Identity Service (DD, sección 8.2.1): registro de clientes y de técnicos o
     proveedores, inicio de sesión y perfil del usuario autenticado.
@@ -30,13 +30,20 @@ info:
     El correo queda fuera del MVP (ADR-024), así que el proveedor comparte el enlace por el medio que use con su
     técnico.
 
+    **1.8.0** (compatible): cuenta corporativa (RF-06, DD 5.19 y 8.3.18, SCRUM-26 y SCRUM-484). Registro público
+    de la empresa cliente con su primer `empresa_contacto`, consulta de la empresa y de sus usuarios, y alta de
+    otros usuarios de la empresa con la misma invitación de un solo uso de la 1.7.0. La empresa cliente es una
+    cuenta dentro del tenant del canal, no un tenant (DEP-13). `companyId` se agrega al perfil y el token del
+    `empresa_contacto` lleva el claim `company_id`.
+
     - **Proveedor:** Identity Service.
     - **Consumidores:** app móvil Flutter, panel Angular y API Gateway.
     - **Tenant:** en el registro y el login se resuelve a partir del canal (`X-Channel-Id`) por el que llega
       la petición (RN-U5, DD 10.3), nunca de un campo del cuerpo. Identity tiene configurado a qué tenant
       apunta cada canal; sin cabecera se usa el tenant de la instancia.
     - **Token:** JWT firmado con RS256 por Identity. Claims: `sub` (id del usuario), `tenant_id`, `role`,
-      `iss`, `aud`, `exp`. Los demás servicios lo validan con la llave pública de Identity.
+      `iss`, `aud`, `exp`; el de un `empresa_contacto` también `company_id` (1.8.0). Los demás servicios lo
+      validan con la llave pública de Identity.
     - Los errores se devuelven como `application/problem+json` (RFC 9457).
   contact:
     name: Equipo QUICKPATCH
@@ -57,6 +64,8 @@ tags:
     description: Verificación de técnicos y proveedores, solo para `admin_tenant` y sobre su propio tenant.
   - name: provider-team
     description: Equipo de técnicos del proveedor, solo para `proveedor` y sobre su propio equipo (RN-TP4).
+  - name: companies
+    description: Cuenta corporativa (empresa cliente), solo para `empresa_contacto` y sobre su propia empresa (RN-CC3).
 paths:
   /v1/auth/register/client:
     post:
@@ -140,6 +149,60 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '503':
           $ref: '#/components/responses/ChannelWithoutTenant'
+  /v1/auth/register/company:
+    post:
+      tags: [auth]
+      operationId: registerCompany
+      summary: Registrar una cuenta corporativa
+      description: |
+        Crea la empresa cliente (`client_companies`) y su primer usuario con rol `empresa_contacto` en el tenant
+        del canal, en una sola transacción (RF-06, DD 8.3.18). La empresa es una cuenta dentro del tenant: no
+        se crea un tenant (DEP-13). El NIT es único dentro del tenant (RN-CC1) y el correo del usuario también
+        (RN-U1). El usuario define su contraseña aquí; los demás usuarios de la empresa entran por invitación
+        (`POST /v1/companies/me/users`). No inicia sesión.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterCompanyRequest'
+            example:
+              company:
+                legalName: Inversiones Andinas S.A.S.
+                nit: 900123456-7
+                contactEmail: mantenimiento@andinas.com.co
+                contactPhone: '+5716012345'
+              user:
+                email: laura.mora@andinas.com.co
+                password: Contrasena-segura-1
+                fullName: Laura Mora
+                phone: '+573001112233'
+      responses:
+        '201':
+          description: Empresa y primer usuario registrados.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyRegistered'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/TenantDisabled'
+        '409':
+          description: El NIT (`problems/nit-registrado`) o el correo (`problems/correo-registrado`) ya están registrados en el tenant.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/ChannelWithoutTenant'
   /v1/auth/login:
     post:
       tags: [auth]
@@ -203,7 +266,8 @@ paths:
       operationId: setupPassword
       summary: Definir la contraseña con una invitación
       description: |
-        El técnico del equipo de un proveedor define su contraseña con el token de su invitación (DD 8.3.14).
+        El técnico del equipo de un proveedor (DD 8.3.14) o el usuario agregado a una empresa cliente (DD 8.3.18,
+        desde la 1.8.0) define su contraseña con el token de su invitación.
         El tenant sale del canal (`X-Channel-Id`, RN-U5), igual que en el login. El token sirve una sola vez y
         vence a las 72 horas; usado, vencido, anulado o de otro tenant responde igual (`400 enlace-invalido`),
         para no revelar cuál fue el caso. No inicia sesión: después el técnico entra con `POST /v1/auth/login`.
@@ -676,13 +740,173 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /v1/companies/me:
+    get:
+      tags: [companies]
+      operationId: getMyCompany
+      summary: Consultar la empresa propia
+      description: Devuelve la empresa cliente del `company_id` del token (DD 8.3.18).
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Empresa del usuario.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Company'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/companies/me/users:
+    post:
+      tags: [companies]
+      operationId: createCompanyUser
+      summary: Agregar un usuario a la empresa
+      description: |
+        Crea un usuario con rol `empresa_contacto` en el tenant y la empresa del token (RN-CC3, DD 8.3.18); el
+        cuerpo no lleva ni el tenant ni la empresa. El correo es único dentro del tenant (RN-U1).
+
+        El usuario se crea **sin contraseña utilizable** y la respuesta trae su invitación, igual que el equipo
+        del proveedor (1.7.0): un enlace de un solo uso que vence a las 72 horas y que solo se muestra esta vez.
+        Si se pierde, se genera otro con `POST /v1/companies/me/users/{userId}/invitation`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompanyUserRequest'
+            example:
+              email: andres.pena@andinas.com.co
+              fullName: Andrés Peña
+              phone: '+573004445566'
+      responses:
+        '201':
+          description: Usuario agregado a la empresa, con su invitación.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyUserCreated'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: El rol del token no es `empresa_contacto` (`problems/no-autorizado`) o el tenant está inactivo (`problems/tenant-inactivo`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: El correo ya está registrado en el tenant (`problems/correo-registrado`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+    get:
+      tags: [companies]
+      operationId: listCompanyUsers
+      summary: Listar los usuarios de la empresa
+      description: |
+        Devuelve solo los usuarios de la empresa del token (RN-CC3), del más antiguo al más reciente.
+        `passwordDefined` es falso mientras el usuario no haya usado su invitación.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: page
+          in: query
+          required: false
+          description: Página, desde 1 (DD 8.1).
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: size
+          in: query
+          required: false
+          description: Elementos por página, máximo 100 (DD 8.1).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Usuarios de la empresa.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyUserPage'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/companies/me/users/{userId}/invitation:
+    post:
+      tags: [companies]
+      operationId: renewCompanyUserInvitation
+      summary: Generar una invitación nueva para un usuario de la empresa
+      description: |
+        Genera un enlace nuevo y anula los anteriores sin usar (DD 8.3.18). Solo para usuarios de la empresa del
+        token: uno de otra empresa o de otro tenant responde `404`. Si el usuario ya definió su contraseña
+        responde `409`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CompanyUserId'
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '201':
+          description: Invitación nueva.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invitation'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: El usuario no es de la empresa (`problems/no-encontrado`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: El usuario ya definió su contraseña (`problems/contrasena-definida`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: JWT RS256 emitido por este servicio con los claims `sub`, `tenant_id` y `role`.
+      description: JWT RS256 emitido por este servicio con los claims `sub`, `tenant_id` y `role`, y `company_id` para `empresa_contacto`.
   parameters:
     ChannelId:
       name: X-Channel-Id
@@ -708,6 +932,14 @@ components:
       in: path
       required: true
       description: Identificador del usuario técnico o proveedor (`users.id`).
+      schema:
+        type: string
+        format: uuid
+    CompanyUserId:
+      name: userId
+      in: path
+      required: true
+      description: Identificador del usuario de la empresa (`users.id`).
       schema:
         type: string
         format: uuid
@@ -828,6 +1060,11 @@ components:
           nullable: true
           enum: [pendiente, aprobado, rechazado, suspendido, null]
           description: Solo para `tecnico` y `proveedor` (DD 5.3); `null` en los demás roles.
+        companyId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Desde la 1.8.0. Empresa cliente del `empresa_contacto` (RN-CC2); `null` en los demás roles.
     TenantStatus:
       type: string
       description: Estado del tenant (DD, tabla `tenants`).
@@ -1005,7 +1242,7 @@ components:
     Invitation:
       type: object
       description: |
-        Invitación para que un técnico del equipo defina su contraseña. El token va después de `#` en el enlace,
+        Invitación para que un técnico del equipo o un usuario de la empresa defina su contraseña. El token va después de `#` en el enlace,
         así no llega a los registros de los servidores web cuando se abre.
       required: [link, token, expiresAt]
       properties:
@@ -1024,6 +1261,128 @@ components:
           format: date-time
     ProviderTechnicianCreated:
       description: Perfil del técnico creado y su invitación.
+      allOf:
+        - $ref: '#/components/schemas/UserProfile'
+        - type: object
+          required: [invitation]
+          properties:
+            invitation:
+              $ref: '#/components/schemas/Invitation'
+    RegisterCompanyRequest:
+      type: object
+      required: [company, user]
+      additionalProperties: false
+      properties:
+        company:
+          $ref: '#/components/schemas/CompanyData'
+        user:
+          $ref: '#/components/schemas/RegisterClientRequest'
+    CompanyData:
+      type: object
+      required: [legalName, nit, contactEmail]
+      additionalProperties: false
+      properties:
+        legalName:
+          type: string
+          minLength: 2
+          maxLength: 150
+          description: Razón social.
+        nit:
+          type: string
+          pattern: '^[0-9]{5,15}(-[0-9])?$'
+          maxLength: 30
+          description: NIT con o sin dígito de verificación (`900123456-7`); único dentro del tenant (RN-CC1).
+        contactEmail:
+          type: string
+          format: email
+          maxLength: 150
+          description: Correo de contacto corporativo.
+        contactPhone:
+          type: string
+          maxLength: 30
+          nullable: true
+    Company:
+      type: object
+      required: [id, legalName, nit, contactEmail, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        legalName:
+          type: string
+        nit:
+          type: string
+        contactEmail:
+          type: string
+          format: email
+        contactPhone:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+    CompanyRegistered:
+      type: object
+      required: [company, user]
+      properties:
+        company:
+          $ref: '#/components/schemas/Company'
+        user:
+          $ref: '#/components/schemas/UserProfile'
+    CompanyUserRequest:
+      type: object
+      required: [email, fullName]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 150
+        fullName:
+          type: string
+          minLength: 2
+          maxLength: 150
+        phone:
+          type: string
+          maxLength: 30
+          nullable: true
+    CompanyUser:
+      type: object
+      required: [userId, email, fullName, passwordDefined, createdAt]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        fullName:
+          type: string
+        phone:
+          type: string
+          nullable: true
+        passwordDefined:
+          type: boolean
+          description: Falso mientras el usuario no haya usado su invitación.
+        createdAt:
+          type: string
+          format: date-time
+    CompanyUserPage:
+      type: object
+      required: [items, page, size, totalItems]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CompanyUser'
+        page:
+          type: integer
+        size:
+          type: integer
+        totalItems:
+          type: integer
+    CompanyUserCreated:
+      description: Perfil del usuario agregado y su invitación.
       allOf:
         - $ref: '#/components/schemas/UserProfile'
         - type: object
