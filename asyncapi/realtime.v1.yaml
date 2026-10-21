@@ -1,7 +1,7 @@
 asyncapi: 3.0.0
 info:
   title: QUICKPATCH — Canal de estado en tiempo real
-  version: 1.0.1
+  version: 1.1.0
   description: |
     Contrato del WebSocket `/v1/realtime` (ADR-023; DD V4, sección 8.5). Las apps reciben un **aviso
     corto** cada vez que cambia algo que les corresponde y piden el detalle por REST
@@ -36,6 +36,11 @@ info:
 
     **Versionado:** agregar un tipo de aviso o un campo opcional es compatible (versión menor); la app
     ignora los tipos que no conoce. Quitar o cambiar un campo exige `/v2/realtime`.
+
+    **1.1.0 (SCRUM-479, ADR-026):** trama `chat.message` con el mensaje nuevo del chat de una solicitud. A
+    diferencia de los avisos, **sí lleva el contenido**: así la app lo muestra sin pedir el historial. Solo la
+    reciben los dos participantes del chat (DD RN-CH1), dentro del tenant del mensaje. La app sigue sin enviar
+    tramas después de `auth`: los mensajes se envían por REST (`communication.v1.yaml` 1.3.0).
   contact:
     name: Equipo QUICKPATCH
     url: https://github.com/ARQUI-202630/quickpatch
@@ -70,6 +75,8 @@ channels:
         $ref: '#/components/messages/offerCreated'
       serviceRequestCountsChanged:
         $ref: '#/components/messages/serviceRequestCountsChanged'
+      chatMessage:
+        $ref: '#/components/messages/chatMessage'
     bindings:
       ws:
         method: GET
@@ -97,6 +104,7 @@ operations:
       - $ref: '#/channels/realtime/messages/serviceRequestStatusChanged'
       - $ref: '#/channels/realtime/messages/offerCreated'
       - $ref: '#/channels/realtime/messages/serviceRequestCountsChanged'
+      - $ref: '#/channels/realtime/messages/chatMessage'
 components:
   messages:
     auth:
@@ -183,6 +191,28 @@ components:
           payload:
             type: service-request.counts-changed
             occurredAt: '2026-10-12T16:10:00Z'
+    chatMessage:
+      name: chat.message
+      title: Mensaje nuevo en el chat de una solicitud
+      summary: La app lo agrega a la conversación abierta sin pedir el historial.
+      description: |
+        Communication la envía al guardar un mensaje (`POST /v1/service-requests/{id}/messages`), al **otro
+        participante** del chat y a las demás conexiones del **autor** (por ejemplo, otro dispositivo). No sale de
+        Kafka y el texto no se registra en logs. Si el destinatario no está conectado, ve el mensaje al abrir el
+        historial; no se crea una notificación en el buzón.
+      payload:
+        $ref: '#/components/schemas/ChatMessageFrame'
+      examples:
+        - name: mensaje
+          payload:
+            type: chat.message
+            serviceRequestId: 9a7b6c5d-1e2f-4a3b-8c7d-6e5f4a3b2c1d
+            message:
+              id: 019a0b1c-2d3e-7f40-8a1b-2c3d4e5f6a7b
+              authorId: 2b8f6c1e-4d3a-4e5b-9c7d-1a2b3c4d5e6f
+              authorRole: tecnico
+              text: Llego a las 3 p. m. ¿La portería tiene mi nombre?
+              sentAt: '2026-10-21T17:40:02Z'
   schemas:
     Auth:
       type: object
@@ -255,6 +285,37 @@ components:
         occurredAt:
           type: string
           format: date-time
+    ChatMessageFrame:
+      type: object
+      required: [type, serviceRequestId, message]
+      properties:
+        type:
+          type: string
+          const: chat.message
+        serviceRequestId:
+          type: string
+          format: uuid
+        message:
+          type: object
+          description: El mismo esquema `ChatMessage` de `communication.v1.yaml` 1.3.0.
+          required: [id, authorId, authorRole, text, sentAt]
+          properties:
+            id:
+              type: string
+              format: uuid
+            authorId:
+              type: string
+              format: uuid
+            authorRole:
+              type: string
+              enum: [cliente, tecnico]
+            text:
+              type: string
+              minLength: 1
+              maxLength: 1000
+            sentAt:
+              type: string
+              format: date-time
 x-close-codes:
   description: |
     Códigos de cierre del WebSocket. Los 4xxx son de la aplicación (RFC 6455, sección 7.4.2). Con 4000 a
