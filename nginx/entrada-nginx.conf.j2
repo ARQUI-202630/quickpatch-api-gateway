@@ -1,6 +1,14 @@
-# Nginx de VM1: punto único de entrada de producción y de QA (ADR-022) y proxy de Grafana.
+# Nginx de VM1: entrada TLS de producción y de QA (ADR-022) y proxy de Grafana.
 # Plantilla de Jinja: la escribe infrastructure/ansible/playbooks/deploy-gateway.yml del repositorio quickpatch,
 # que trae este repo como submódulo en apps/api-gateway, y la valida con `nginx -t` antes de recargar.
+#
+# Cada ambiente tiene su propio gateway (gateway-ambiente-nginx.conf.j2, en VM3 y VM2). VM1 termina el HTTPS, aplica la
+# lista de redes del equipo y reenvía por nombre al gateway del ambiente. `gateway_propio` (inventario) dice qué ambientes
+# ya lo hacen: con `false` el Nginx de VM1 atiende ese ambiente por sí mismo (API a Traefik y panel en VM1), que es la forma
+# anterior y sirve de marcha atrás. Cuando los dos estén en `true`, se borran las ramas locales de esta plantilla.
+{% set local_produccion = not gateway_propio.produccion %}
+{% set local_qa = not gateway_propio.qa %}
+{% set quedan_locales = local_produccion or local_qa %}
 events {}
 http {
   server_tokens off;
@@ -10,7 +18,14 @@ http {
   include /etc/nginx/mime.types;
   default_type application/octet-stream;
 
+{% if local_produccion %}
   upstream microservicios { server {{ ip.vm3 }}:30080; }
+{% else %}
+  upstream gateway_produccion { server {{ ip.vm3 }}:{{ gateway_puerto }}; }   # Nginx de producción (VM3)
+{% endif %}
+{% if not local_qa %}
+  upstream gateway_qa { server {{ ip.vm2 }}:{{ gateway_puerto }}; }   # Nginx de QA (VM2)
+{% endif %}
 
   # WebSocket: seguimiento en tiempo real (API) y Grafana Live
   map $http_upgrade $connection_upgrade {
@@ -18,10 +33,12 @@ http {
     ''      close;
   }
 
-  # Canal del cliente (RN-U5, DD 10.3): el gateway fija X-Channel-Id y nunca lo toma de la petición, así que un cliente no
-  # puede inventárselo. El navegador del panel manda Origin en los POST (login) y Referer en los GET; todo lo demás es la
-  # app móvil. Límite: un cliente que no sea navegador puede escribir esas cabeceras; con un solo tenant da igual (los dos
-  # canales apuntan a él) y con más de uno hace falta DEP-09 (DD 14.3).
+{% if quedan_locales %}
+  # Canal del cliente (RN-U5, DD 10.3), solo para los ambientes que VM1 aún atiende por sí mismo: el gateway fija
+  # X-Channel-Id y nunca lo toma de la petición, así que un cliente no puede inventárselo. El navegador del panel manda
+  # Origin en los POST (login) y Referer en los GET; todo lo demás es la app móvil. Límite: un cliente que no sea navegador
+  # puede escribir esas cabeceras; con un solo tenant da igual (los dos canales apuntan a él) y con más de uno hace falta
+  # DEP-09 (DD 14.3). En los ambientes con gateway propio, el mismo mapa vive en gateway-ambiente-nginx.conf.j2.
   # Cuidado: el `proxy_set_header` de este bloque `http` lo heredan todas las `location` solo mientras ninguna defina uno
   # propio. Si alguien agrega un `proxy_set_header` dentro de una `location` o un `server`, esa ruta deja de heredar todos los
   # del bloque (Host, X-Forwarded-*, Upgrade y este) y X-Channel-Id volvería a llegar como el cliente lo mande.
@@ -29,16 +46,23 @@ http {
   # pasarían a quickpatch-mobile sin ningún error.
   map "$http_origin|$http_referer" $canal_cliente {
     default quickpatch-mobile;
-    "~^\|?https://({{ gateway_hosts.produccion | regex_escape }}|{{ gateway_hosts.qa | regex_escape }})(\||/)" quickpatch-web;
+    "~^\|?https://({% if local_produccion %}{{ gateway_hosts.produccion | regex_escape }}{% endif %}{% if local_produccion and local_qa %}|{% endif %}{% if local_qa %}{{ gateway_hosts.qa | regex_escape }}{% endif %})(\||/)" quickpatch-web;
   }
 
+{% if local_qa %}
   # Tenant Beta de QA (pruebas de aislamiento, SCRUM-62): el canal sale del nombre por el que se entra, no de Origin ni de
   # Referer, así que no depende de lo que escriba el cliente y no hace falta DEP-09. Solo QA tiene ese nombre.
   map $host $canal {
     default $canal_cliente;
     {{ gateway_hosts.qa_beta }} quickpatch-beta;
   }
+{% else %}
+  map $host $canal {
+    default $canal_cliente;
+  }
+{% endif %}
 
+{% endif %}
   ssl_certificate     /etc/nginx/certs/quickpatch.crt;
   ssl_certificate_key /etc/nginx/certs/quickpatch.key;
   ssl_protocols TLSv1.2 TLSv1.3;
@@ -47,7 +71,9 @@ http {
   proxy_set_header Host $host;
   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
   proxy_set_header X-Forwarded-Proto https;
+{% if quedan_locales %}
   proxy_set_header X-Channel-Id $canal;
+{% endif %}
   proxy_set_header Upgrade $http_upgrade;
   proxy_set_header Connection $connection_upgrade;
 
@@ -57,6 +83,7 @@ http {
     server_name {{ gateway_hosts.produccion }};
 
     add_header Strict-Transport-Security "max-age=31536000" always;
+{% if local_produccion %}
     add_header X-Content-Type-Options nosniff always;
 
     # WebSocket de seguimiento en tiempo real (ADR-023, SCRUM-451): Communication hace ping cada 30 s, así que los
@@ -78,9 +105,24 @@ http {
       root /usr/share/nginx/panel;
       try_files $uri $uri/ /index.html;
     }
+{% else %}
+
+    # Todo lo demás (API, WebSocket y panel) lo atiende el Nginx de producción en VM3. El WebSocket lleva los mismos
+    # tiempos que allá: si uno de los dos saltos usa el valor por defecto (60 s), corta la conexión inactiva.
+    location /api/v1/realtime {
+      proxy_pass http://gateway_produccion;
+      proxy_read_timeout 75s;
+      proxy_send_timeout 75s;
+      proxy_buffering off;
+    }
+
+    location / {
+      proxy_pass http://gateway_produccion;
+    }
+{% endif %}
   }
 
-  # QA (API en el k3s de VM2, panel servido desde VM1; ADR-022). Solo red del equipo: el panel de QA todavía no tiene login.
+  # QA. Solo red del equipo: el panel de QA todavía no tiene login.
   server {
     listen {{ ansible_host }}:443 ssl;
     server_name {{ gateway_hosts.qa }};
@@ -89,6 +131,7 @@ http {
 {% endfor %}
     deny all;
 
+{% if local_qa %}
     # La API: igual que en producción, el gateway quita /api y reenvía al Traefik de QA (VM2), que elige el servicio por la
     # ruta del contrato (los Ingress de cada servicio no llevan /api). Sin esto, /api/v1/... llega a Traefik y da 404.
     # WebSocket de seguimiento en tiempo real (ADR-023, SCRUM-451): Communication hace ping cada 30 s, así que los
@@ -112,6 +155,19 @@ http {
       root /usr/share/nginx/panel-qa;
       try_files $uri $uri/ /index.html;
     }
+{% else %}
+    # API, WebSocket y panel de QA los atiende el Nginx de QA en VM2 (mismos tiempos de espera del WebSocket que allá).
+    location /api/v1/realtime {
+      proxy_pass http://gateway_qa;
+      proxy_read_timeout 75s;
+      proxy_send_timeout 75s;
+      proxy_buffering off;
+    }
+
+    location / {
+      proxy_pass http://gateway_qa;
+    }
+{% endif %}
   }
 
   # QA, tenant Beta: la misma API de QA, entrada solo por la red del equipo. El canal lo fija el mapa $canal por el nombre
@@ -125,6 +181,7 @@ http {
 {% endfor %}
     deny all;
 
+{% if local_qa %}
     location /api/v1/realtime {
       proxy_pass http://{{ ip.vm2 }}:30080/v1/realtime;
       proxy_read_timeout 75s;
@@ -139,6 +196,18 @@ http {
     location / {
       return 404;
     }
+{% else %}
+    location /api/v1/realtime {
+      proxy_pass http://gateway_qa;
+      proxy_read_timeout 75s;
+      proxy_send_timeout 75s;
+      proxy_buffering off;
+    }
+
+    location / {
+      proxy_pass http://gateway_qa;
+    }
+{% endif %}
   }
 
   # Grafana (en la propia VM1). Prometheus no se publica: Grafana lo consulta dentro del laboratorio.

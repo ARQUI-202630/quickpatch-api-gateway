@@ -1,0 +1,125 @@
+# Nginx del gateway de un ambiente (ADR-022 y ADR de gateway por ambiente): corre en VM3 (producción) o en VM2 (QA).
+# Plantilla de Jinja: la escribe infrastructure/ansible/playbooks/deploy-gateway.yml del repositorio quickpatch para el
+# ambiente de cada VM (`entorno`: produccion o qa) y la valida con `nginx -t` antes de recargar. Es la misma para los dos
+# ambientes: lo único que cambia es el nombre por el que se entra, el Traefik al que reenvía y que el tenant Beta solo existe en QA.
+#
+# Entrada: solo el Nginx de VM1 llega al puerto {{ gateway_puerto }} (regla de firewall en firewall.yml). VM1 termina el HTTPS, aplica la lista
+# de redes del equipo y reenvía aquí sin cambiar `Host`, `Origin` ni `Referer`. Por eso esta plantilla no filtra por red de origen (siempre
+# sería VM1) y no usa TLS. Salida: el Traefik de k3s de la misma VM, que elige el servicio por la ruta del contrato.
+{% set es_qa = entorno == 'qa' %}
+events {}
+http {
+  server_tokens off;
+  client_max_body_size 15m;   # evidencias fotográficas
+  # Este archivo reemplaza el nginx.conf completo: sin mime.types, Nginx sirve todo como text/plain y el navegador no
+  # ejecuta los módulos JavaScript del panel (página en blanco).
+  include /etc/nginx/mime.types;
+  default_type application/octet-stream;
+
+  upstream microservicios { server {{ ansible_host }}:30080; }   # Traefik de este ambiente
+
+  # WebSocket: seguimiento en tiempo real
+  map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+  }
+
+  # Canal del cliente (RN-U5, DD 10.3): este gateway fija X-Channel-Id y nunca lo toma de la petición, así que un cliente no
+  # puede inventárselo (el valor que llegue de VM1 se reemplaza). El navegador del panel manda Origin en los POST (login) y
+  # Referer en los GET; todo lo demás es la app móvil. Límite: un cliente que no sea navegador puede escribir esas cabeceras; con
+  # un solo tenant da igual (los dos canales apuntan a él) y con más de uno hace falta DEP-09 (DD 14.3).
+  # Cuidado: el `proxy_set_header` de este bloque `http` lo heredan todas las `location` solo mientras ninguna defina uno
+  # propio. Si alguien agrega un `proxy_set_header` dentro de una `location` o un `server`, esa ruta deja de heredar todos los
+  # del bloque (Host, X-Forwarded-*, Upgrade y este) y X-Channel-Id volvería a llegar como el cliente lo mande.
+  # El panel debe seguir mandando `Referer` (política por defecto del navegador): con `Referrer-Policy: no-referrer` sus GET
+  # pasarían a quickpatch-mobile sin ningún error.
+  map "$http_origin|$http_referer" $canal_cliente {
+    default quickpatch-mobile;
+    "~^\|?https://({{ gateway_hosts[entorno] | regex_escape }})(\||/)" quickpatch-web;
+  }
+
+{% if es_qa %}
+  # Tenant Beta de QA (pruebas de aislamiento, SCRUM-62): el canal sale del nombre por el que se entra (VM1 lo conserva en
+  # `Host`), no de Origin ni de Referer, así que no depende de lo que escriba el cliente y no hace falta DEP-09.
+  map $host $canal {
+    default $canal_cliente;
+    {{ gateway_hosts.qa_beta }} quickpatch-beta;
+  }
+{% else %}
+  map $host $canal {
+    default $canal_cliente;
+  }
+{% endif %}
+
+  proxy_http_version 1.1;
+  proxy_set_header Host $host;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto https;
+  proxy_set_header X-Channel-Id $canal;
+  proxy_set_header Upgrade $http_upgrade;
+  proxy_set_header Connection $connection_upgrade;
+
+  server {
+    listen {{ ansible_host }}:{{ gateway_puerto }} default_server;
+    server_name {{ gateway_hosts[entorno] }};
+{% if not es_qa %}
+
+    add_header X-Content-Type-Options nosniff always;
+{% endif %}
+
+    # Para comprobar el gateway sin pasar por Traefik (verificar-gateway-ambiente.yml).
+    location = /gateway-salud {
+      access_log off;
+      default_type text/plain;
+      return 200 "ok\n";
+    }
+
+    # La API: el gateway quita /api y reenvía al Traefik de este ambiente, que elige el servicio por la ruta del contrato (los
+    # Ingress de cada servicio no llevan /api). Sin esto, /api/v1/... llega a Traefik y da 404.
+    # WebSocket de seguimiento en tiempo real (ADR-023, SCRUM-451): Communication hace ping cada 30 s, así que los tiempos de
+    # espera quedan por encima (75 s) y no se corta una conexión inactiva a los 60 s por defecto. Sin buffer, las tramas llegan
+    # de inmediato. `Upgrade` y `Connection` ya los fija el bloque http. VM1 usa los mismos 75 s.
+    location /api/v1/realtime {
+      proxy_pass http://microservicios/v1/realtime;
+      proxy_read_timeout 75s;
+      proxy_send_timeout 75s;
+      proxy_buffering off;
+    }
+
+    location /api/ {
+      proxy_pass http://microservicios/;
+    }
+
+    # Panel Angular (SPA): archivos estáticos de la carpeta panel de esta VM, que escribe el job "Panel en {{ 'qa' if es_qa else 'produccion' }}" de
+    # quickpatch-web con el runner de VM1.
+    location / {
+      root /usr/share/nginx/panel;
+      try_files $uri $uri/ /index.html;
+    }
+  }
+{% if es_qa %}
+
+  # QA, tenant Beta: la misma API de QA. El canal lo fija el mapa $canal por el nombre (quickpatch-beta); cada servicio lo traduce a
+  # tenant con Channel__Tenants__quickpatch-beta, que se agrega solo en QA (playbook habilitar-tenant-beta.yml de quickpatch). No
+  # sirve el panel.
+  server {
+    listen {{ ansible_host }}:{{ gateway_puerto }};
+    server_name {{ gateway_hosts.qa_beta }};
+
+    location /api/v1/realtime {
+      proxy_pass http://microservicios/v1/realtime;
+      proxy_read_timeout 75s;
+      proxy_send_timeout 75s;
+      proxy_buffering off;
+    }
+
+    location /api/ {
+      proxy_pass http://microservicios/;
+    }
+
+    location / {
+      return 404;
+    }
+  }
+{% endif %}
+}
