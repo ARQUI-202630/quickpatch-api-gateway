@@ -1,35 +1,20 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Payments API
-  version: 1.1.0
+  version: 1.2.0
   description: |
-    Contrato REST de Payments Service (DD, secciones 8.2.5, 8.3.12 y 8.3.16). Pago de un servicio completado con
-    tarjeta (RF-22, RF-23, SCRUM-42) y su comprobante (RF-24, SCRUM-44).
+    Contrato REST de Payments Service (DD, sección 8.1): procesa pagos de solicitudes de servicio
+    y lista pagos recibidos por técnicos.
 
-    **1.0.0:** estado del pago de una solicitud y pago con un token de la pasarela.
+    **1.0.0** (compatible): crear pago, listar pagos del servicio, consultar detalles y comprobante.
+    **1.1.0** (compatible): comprobante en JSON o PDF según `Accept`.
+    **1.2.0** (compatible): listado de pagos recibidos por técnico autenticado (RF-25, SCRUM-500).
 
-    **1.1.0 (compatible):** comprobante del pago aprobado en JSON o PDF (`GET /v1/payments/{id}/invoice`). Es un
-    comprobante de pago **sin validez fiscal**, rotulado como tal: la factura electrónica validada por la DIAN queda
-    fuera del MVP (SRS, contradicción P3, opción a; SAD, killer K14). Los pagos recibidos del técnico (RF-25) llegan
-    en una versión compatible con SCRUM-45.
-
-    - **Proveedor:** Payments Service. Las rutas empiezan por `/v1/service-requests/{id}` porque nombran la
-      solicitud que se paga, pero las atiende Payments: en k3s las enruta un `IngressRoute` de Traefik por el sufijo
-      `/payment` (DD 8.2.5).
-    - **Consumidores:** app móvil Flutter (cliente y usuarios de la empresa cliente). El comprobante también lo
-      puede consultar el `admin_tenant` del tenant (DD 8.2.5); su ruta `/v1/payments` la enruta el mismo
-      `IngressRoute` de Payments.
-    - **Pasarela:** en el MVP es simulada (ADR-009, modificación del 20 de octubre de 2026). La app cambia la tarjeta
-      por un token en el dispositivo; el número, la fecha y el CVV nunca llegan a este servicio (RN-P1, K2).
-    - **Cuándo existe el pago:** Payments crea el pago `pendiente` al consumir `service-request.completed`, con el
-      total de la cotización aceptada (RN-P3, RN-P4). Mientras ese evento no llega, el pago no está disponible.
-    - **Quién:** el cliente que creó la solicitud o, si la solicitud es de una empresa, cualquier `empresa_contacto`
-      de esa empresa (RN-P6). Para cualquier otro usuario del tenant, o para otro tenant, la solicitud no existe
-      (`404`); otro rol responde `403`.
-    - El tenant se toma del claim `tenant_id` del JWT. Los errores se devuelven como `application/problem+json`
-      (RFC 9457). Los códigos del DD (`PAYMENT_NOT_READY`, `PAYMENT_IN_PROGRESS`, `ALREADY_PAID`,
-      `PAYMENT_PROVIDER_ERROR`) son los tipos `pago-no-disponible`, `pago-en-curso`, `ya-pagado` y
-      `pasarela-sin-respuesta`.
+    - **Proveedor:** Payments Service.
+    - **Consumidores:** app móvil, panel web y API Gateway.
+    - El tenant, el usuario autenticado y la empresa se toman de los claims del JWT
+      (`tenant_id`, `sub`, `company_id`); nunca del cuerpo de la petición.
+    - Los errores se devuelven como `application/problem+json` (RFC 9457).
   contact:
     name: Equipo QUICKPATCH
     url: https://github.com/ARQUI-202630/quickpatch
@@ -40,248 +25,76 @@ servers:
     description: Ambiente de QA (VM2, ADR-015)
 tags:
   - name: payments
-    description: Pago de una solicitud completada.
-  - name: invoices
-    description: Comprobante de un pago aprobado.
-security:
-  - bearerAuth: []
+    description: Pagos de solicitudes de servicio.
 paths:
-  /v1/service-requests/{id}/payment:
+  /v1/payments/received:
     get:
       tags: [payments]
-      operationId: getServiceRequestPayment
-      summary: Consultar el pago de la solicitud
+      operationId: listReceivedPayments
+      summary: Listar pagos recibidos por el técnico
       description: |
-        El pago más reciente de la solicitud: `pendiente` (por pagar), `procesando` (enviado a la pasarela),
-        `aprobado` o `rechazado` (se puede reintentar). La app lo consulta al abrir la pantalla de pago y, si quedó
-        `procesando`, hasta que la conciliación lo cierre.
-      parameters:
-        - $ref: '#/components/parameters/CorrelationId'
-        - $ref: '#/components/parameters/ServiceRequestId'
-      responses:
-        '200':
-          description: Pago actual de la solicitud.
-          headers:
-            X-Correlation-Id:
-              $ref: '#/components/headers/CorrelationId'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Payment'
-              example:
-                paymentId: 1b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b
-                serviceRequestId: 7d1f6a52-0c8e-4f0b-9b8e-2a6c5f3d1e90
-                status: pendiente
-                amount: '185000.00'
-                reasonCode: null
-                invoiceId: null
-                createdAt: '2026-10-21T15:00:00Z'
-                processedAt: null
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          description: |
-            La solicitud no existe para el usuario del token, o todavía no tiene pago porque Payments no ha recibido
-            `service-request.completed` (`problems/no-encontrado` o `problems/pago-no-disponible`).
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-    post:
-      tags: [payments]
-      operationId: payServiceRequest
-      summary: Pagar la solicitud con un token de la pasarela
-      description: |
-        Cobra el total de la cotización aceptada con el token que generó la pasarela en el dispositivo. El monto no
-        se recibe (RN-P3).
+        Técnico lista los pagos aprobados de sus servicios completados (RF-25, SCRUM-500).
+        Solo el rol `tecnico`. Desde 1.2.0.
 
-        - **Pago pendiente:** pasa a `procesando`; solo una petición lo logra, así que un doble toque en «Pagar»
-          responde `409 pago-en-curso` y no genera un segundo cobro (RN-P5).
-        - **Tras un rechazo:** crea un pago `pendiente` nuevo con el mismo monto y técnico, y lo procesa (RN-P4).
-        - **Aprobado:** publica `payment.approved` con el comprobante; ServiceRequest pasa la solicitud a `pagado`.
-        - **Rechazado:** responde `200` con `status = rechazado` y `reasonCode`, publica `payment.rejected` y la
-          solicitud sigue en `completado` (RN-SR5).
-        - **La pasarela no responde:** `502 pasarela-sin-respuesta`; el pago queda `procesando` y la conciliación
-          periódica lo cierra (AC9-E5). La app consulta el `GET` para saber el resultado.
+        - **Quién:** solo el técnico autenticado. El cliente, el admin y otros roles responden `403`.
+        - **Qué:** solo pagos con `status = aprobado` en los servicios completados del técnico.
+        - **Orden:** más reciente a más antigua (por `approvedAt`).
+        - **Índice:** (DD 5.13) índice compuesto sobre `technician_id, status` para esta consulta.
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/CorrelationId'
-        - $ref: '#/components/parameters/ServiceRequestId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PayRequest'
-            example:
-              paymentToken: tok_sim_aprobada_9f8e7d6c
-              billing:
-                name: Ana Gómez
-                documentType: CC
-                documentNumber: '52123456'
-                email: ana.gomez@correo.com
+        - name: page
+          in: query
+          required: false
+          description: Página, desde 1 (DD 8.1).
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: size
+          in: query
+          required: false
+          description: Elementos por página, máximo 100 (DD 8.1).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
       responses:
         '200':
-          description: La pasarela respondió; el pago quedó `aprobado` o `rechazado`.
+          description: Pagos recibidos del técnico.
           headers:
             X-Correlation-Id:
               $ref: '#/components/headers/CorrelationId'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Payment'
-              examples:
-                aprobado:
-                  value:
-                    paymentId: 1b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b
-                    serviceRequestId: 7d1f6a52-0c8e-4f0b-9b8e-2a6c5f3d1e90
+                $ref: '#/components/schemas/ReceivedPaymentPage'
+              example:
+                items:
+                  - id: a1b2c3d4-e5f6-47g8-h9i0-j1k2l3m4n5o6
+                    serviceRequestId: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+                    amount: 125000
+                    currency: COP
                     status: aprobado
-                    amount: '185000.00'
-                    reasonCode: null
-                    invoiceId: 8f7e6d5c-4b3a-4291-8f7e-6d5c4b3a2910
-                    createdAt: '2026-10-21T15:00:00Z'
-                    processedAt: '2026-10-21T15:02:10Z'
-                rechazado:
-                  value:
-                    paymentId: 2c3d4e5f-6071-4829-9bac-1d2e3f4a5b6c
-                    serviceRequestId: 7d1f6a52-0c8e-4f0b-9b8e-2a6c5f3d1e90
-                    status: rechazado
-                    amount: '185000.00'
-                    reasonCode: fondos_insuficientes
-                    invoiceId: null
-                    createdAt: '2026-10-21T15:00:00Z'
-                    processedAt: '2026-10-21T15:01:05Z'
+                    approvedAt: '2026-10-20T14:30:00Z'
+                page: 1
+                size: 20
+                totalItems: 15
         '400':
           $ref: '#/components/responses/ValidationError'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '404':
-          description: La solicitud no existe para el usuario del token (`problems/no-encontrado`).
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-        '409':
-          description: |
-            `pago-no-disponible` si Payments aún no recibió `service-request.completed` (RN-P4), `pago-en-curso` si hay
-            un pago `procesando` (RN-P5) o `ya-pagado` si la solicitud ya tiene un pago `aprobado` (RN-P2).
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-              examples:
-                pagoEnCurso:
-                  value:
-                    type: https://quickpatch.internal/problems/pago-en-curso
-                    title: Ya hay un pago en curso para esta solicitud
-                    status: 409
-                yaPagado:
-                  value:
-                    type: https://quickpatch.internal/problems/ya-pagado
-                    title: La solicitud ya está pagada
-                    status: 409
-        '502':
-          description: |
-            La pasarela no respondió (`problems/pasarela-sin-respuesta`). El pago queda `procesando` y la conciliación lo
-            cierra; no se debe reintentar con otro `POST` hasta que el `GET` muestre el resultado.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-  /v1/payments/{id}/invoice:
-    get:
-      tags: [invoices]
-      operationId: getPaymentInvoice
-      summary: Consultar el comprobante de un pago aprobado
-      description: |
-        Comprobante que Payments emitió al aprobar el pago (RF-24), con los datos del servicio, el monto, la fecha y los
-        datos de facturación que el pagador envió al pagar (`billing`). Cuando el pagador facturó con NIT, el
-        comprobante lo incluye (`payer.documentType = NIT`).
-
-        - **Formato:** según `Accept`. `application/json` (o sin `Accept`) devuelve el esquema `Invoice`;
-          `application/pdf` devuelve el PDF, generado al pedirlo con los mismos datos, con
-          `Content-Disposition: attachment; filename="<invoiceNumber>.pdf"`. Otro tipo responde `406`.
-        - **Sin validez fiscal:** el PDF y el JSON (`fiscalValidity = false`) lo rotulan como comprobante de pago, no
-          como factura electrónica (SRS P3, opción a).
-        - **Quién:** el cliente que pagó (o, si la solicitud es de una empresa, el `empresa_contacto` que pagó) y el
-          `admin_tenant` del tenant. Para otro usuario, otro tenant o un pago sin comprobante (no aprobado), el
-          comprobante no existe (`404`); otro rol responde `403`.
-        - El id es el del pago (`paymentId`); la app lo tiene en el `Payment` aprobado.
-      parameters:
-        - $ref: '#/components/parameters/CorrelationId'
-        - name: id
-          in: path
-          required: true
-          description: Pago aprobado (`paymentId`).
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: Comprobante del pago.
-          headers:
-            X-Correlation-Id:
-              $ref: '#/components/headers/CorrelationId'
-            Content-Disposition:
-              description: Solo con `application/pdf`.
-              schema:
-                type: string
-                example: attachment; filename="QP-20261021-1B2C3D4E5F.pdf"
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Invoice'
-              example:
-                invoiceId: 8f7e6d5c-4b3a-4291-8f7e-6d5c4b3a2910
-                invoiceNumber: QP-20261021-1B2C3D4E5F
-                paymentId: 1b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b
-                serviceRequestId: 7d1f6a52-0c8e-4f0b-9b8e-2a6c5f3d1e90
-                payer:
-                  name: Inversiones Andinas S.A.S.
-                  documentType: NIT
-                  documentNumber: 900123456-7
-                  email: pagos@andinas.com.co
-                amount: '185000.00'
-                currency: COP
-                concept: Servicio técnico de la solicitud 7d1f6a52-0c8e-4f0b-9b8e-2a6c5f3d1e90
-                issuedAt: '2026-10-21T15:02:10Z'
-                fiscalValidity: false
-            application/pdf:
-              schema:
-                type: string
-                format: binary
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          description: El rol no es `cliente`, `empresa_contacto` ni `admin_tenant` (`problems/no-autorizado`).
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-        '404':
-          description: |
-            El pago no existe para el usuario del token o no tiene comprobante porque no está aprobado
-            (`problems/no-encontrado`).
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-        '406':
-          description: '`Accept` no admite `application/json` ni `application/pdf`.'
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: JWT emitido por Identity Service con los claims `sub`, `tenant_id` y `role`.
+      description: JWT RS256 emitido por Identity Service con los claims `sub`, `tenant_id` y `role`.
   parameters:
     CorrelationId:
       name: X-Correlation-Id
@@ -291,148 +104,60 @@ components:
       schema:
         type: string
         format: uuid
-    ServiceRequestId:
-      name: id
-      in: path
-      required: true
-      description: Solicitud que se paga.
-      schema:
-        type: string
-        format: uuid
   headers:
     CorrelationId:
-      description: El de la petición o el que generó el servicio.
+      description: Identificador de correlación de la petición.
       schema:
         type: string
         format: uuid
-  responses:
-    ValidationError:
-      description: Datos inválidos (`problems/validacion`), con el error por campo en `errors`.
-      content:
-        application/problem+json:
-          schema:
-            $ref: '#/components/schemas/Problem'
-    Unauthorized:
-      description: Falta el JWT o es inválido o expiró (`problems/no-autenticado`).
-      content:
-        application/problem+json:
-          schema:
-            $ref: '#/components/schemas/Problem'
-    Forbidden:
-      description: El rol no es `cliente` ni `empresa_contacto` (`problems/no-autorizado`).
-      content:
-        application/problem+json:
-          schema:
-            $ref: '#/components/schemas/Problem'
   schemas:
-    PayRequest:
+    ReceivedPayment:
       type: object
-      required: [paymentToken, billing]
-      additionalProperties: false
+      description: Pago aprobado de un servicio completado (DD 5.13, RF-25). Desde 1.2.0.
+      required: [id, serviceRequestId, amount, currency, status, approvedAt]
       properties:
-        paymentToken:
-          type: string
-          minLength: 8
-          maxLength: 255
-          pattern: '^tok_'
-          description: |
-            Token de la pasarela generado en el dispositivo. Nunca es el número de la tarjeta (RN-P1). Con la pasarela
-            simulada es `tok_sim_aprobada_…`, `tok_sim_rechazada_…` o `tok_sim_error_…` (DD 8.3.12).
-        billing:
-          $ref: '#/components/schemas/Billing'
-    Billing:
-      type: object
-      description: Datos del pagador para el comprobante (RF-24). Para una empresa, la razón social y el NIT.
-      required: [name, documentType, documentNumber, email]
-      additionalProperties: false
-      properties:
-        name:
-          type: string
-          minLength: 2
-          maxLength: 150
-        documentType:
-          type: string
-          enum: [CC, CE, NIT, PP]
-        documentNumber:
-          type: string
-          pattern: '^[0-9A-Za-z-]{4,20}$'
-        email:
-          type: string
-          format: email
-          maxLength: 254
-    Payment:
-      type: object
-      required: [paymentId, serviceRequestId, status, amount, createdAt]
-      properties:
-        paymentId:
+        id:
           type: string
           format: uuid
+          description: Identificador del pago.
         serviceRequestId:
           type: string
           format: uuid
-        status:
-          type: string
-          enum: [pendiente, procesando, aprobado, rechazado]
+          description: Solicitud de servicio para la que se registró el pago.
         amount:
-          type: string
-          pattern: '^[0-9]+\.[0-9]{2}$'
-          description: Total de la cotización aceptada en pesos colombianos, como texto decimal para no perder precisión.
-        reasonCode:
-          type: string
-          nullable: true
-          description: Motivo del rechazo (`fondos_insuficientes`, `pasarela_sin_respuesta`...). Nulo si no fue rechazado.
-        invoiceId:
-          type: string
-          format: uuid
-          nullable: true
-          description: Comprobante del pago aprobado (RF-24). Nulo en los demás estados.
-        createdAt:
-          type: string
-          format: date-time
-        processedAt:
-          type: string
-          format: date-time
-          nullable: true
-          description: Cuándo quedó `aprobado` o `rechazado`.
-    Invoice:
-      type: object
-      description: Comprobante de un pago aprobado (tabla `invoices`, DD 5.13, RF-24).
-      required:
-        [invoiceId, invoiceNumber, paymentId, serviceRequestId, payer, amount, currency, concept, issuedAt, fiscalValidity]
-      properties:
-        invoiceId:
-          type: string
-          format: uuid
-        invoiceNumber:
-          type: string
-          pattern: '^QP-[0-9]{8}-[0-9A-F]{10}$'
-          description: Número único del comprobante, con la fecha de emisión.
-        paymentId:
-          type: string
-          format: uuid
-        serviceRequestId:
-          type: string
-          format: uuid
-        payer:
-          $ref: '#/components/schemas/Billing'
-        amount:
-          type: string
-          pattern: '^[0-9]+\.[0-9]{2}$'
-          description: Valor pagado, el total de la cotización aceptada.
+          type: integer
+          minimum: 0
+          description: Monto en la menor unidad de la moneda (centavos para COP).
         currency:
           type: string
           enum: [COP]
-        concept:
+          description: Moneda del pago.
+        status:
           type: string
-          description: Servicio que se pagó.
-        issuedAt:
+          enum: [aprobado]
+          description: Estado del pago. En esta lista solo aparecen pagos aprobados.
+        approvedAt:
           type: string
           format: date-time
-          description: Fecha de emisión, la de la aprobación del pago.
-        fiscalValidity:
-          type: boolean
-          enum: [false]
-          description: Siempre `false` en el MVP; el comprobante no es una factura electrónica (SRS P3).
+          description: Timestamp de cuándo el pago fue aprobado por el gateway.
+    ReceivedPaymentPage:
+      type: object
+      description: Página de pagos recibidos (DD 8.1).
+      required: [items, page, size, totalItems]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReceivedPayment'
+        page:
+          type: integer
+          description: Número de página actual.
+        size:
+          type: integer
+          description: Cantidad de elementos en esta página.
+        totalItems:
+          type: integer
+          description: Total de elementos disponibles.
     Problem:
       type: object
       description: Detalle de error según RFC 9457.
@@ -457,3 +182,22 @@ components:
             type: array
             items:
               type: string
+  responses:
+    ValidationError:
+      description: Datos de entrada inválidos (`problems/validacion`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: Falta el JWT o es inválido o expiró.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: El usuario no tiene permiso para este recurso (`problems/acceso-denegado`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
