@@ -6,9 +6,6 @@ info:
     Contrato REST de Identity Service (DD, sección 8.2.1): registro de clientes y de técnicos o
     proveedores, inicio de sesión y perfil del usuario autenticado.
 
-    **1.9.0** (compatible): edición del perfil propio (RF-XX, SCRUM-609, SCRUM-610): PATCH /v1/users/me
-    para actualizar fullName y phone.
-
     **1.1.0** (compatible): registro de técnico o proveedor, `verificationStatus` en el perfil y `403`
     por tenant inactivo en el registro.
 
@@ -38,6 +35,10 @@ info:
     otros usuarios de la empresa con la misma invitación de un solo uso de la 1.7.0. La empresa cliente es una
     cuenta dentro del tenant del canal, no un tenant (DEP-13). `companyId` se agrega al perfil y el token del
     `empresa_contacto` lleva el claim `company_id`.
+
+    **1.9.0** (compatible): edición del perfil propio (SCRUM-609 y SCRUM-610, retroalimentación del Sprint 4):
+    `PATCH /v1/users/me` actualiza `fullName` y `phone` del usuario del token. El correo, el rol, el tenant y el
+    estado de verificación no se editan.
 
     - **Proveedor:** Identity Service.
     - **Consumidores:** app móvil Flutter, panel Angular y API Gateway.
