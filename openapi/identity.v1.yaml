@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Identity API
-  version: 1.8.0
+  version: 1.9.0
   description: |
     Contrato REST de Identity Service (DD, sección 8.2.1): registro de clientes y de técnicos o
     proveedores, inicio de sesión y perfil del usuario autenticado.
@@ -35,6 +35,10 @@ info:
     otros usuarios de la empresa con la misma invitación de un solo uso de la 1.7.0. La empresa cliente es una
     cuenta dentro del tenant del canal, no un tenant (DEP-13). `companyId` se agrega al perfil y el token del
     `empresa_contacto` lleva el claim `company_id`.
+
+    **1.9.0** (compatible): edición del perfil propio (SCRUM-609 y SCRUM-610, retroalimentación del Sprint 4):
+    `PATCH /v1/users/me` actualiza `fullName` y `phone` del usuario del token. El correo, el rol, el tenant y el
+    estado de verificación no se editan.
 
     - **Proveedor:** Identity Service.
     - **Consumidores:** app móvil Flutter, panel Angular y API Gateway.
@@ -322,6 +326,49 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+    patch:
+      tags: [users]
+      operationId: updateCurrentUser
+      summary: Actualizar el perfil propio
+      description: |
+        Actualiza nombre y teléfono del usuario del token (SCRUM-609). El backend modifica solo al usuario
+        autenticado, usando su tenant del JWT. No acepta id, email, role, tenant_id ni verificationStatus.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              minProperties: 1
+              properties:
+                fullName:
+                  type: string
+                  minLength: 2
+                  maxLength: 150
+                phone:
+                  type: string
+                  minLength: 7
+                  maxLength: 30
+                  nullable: true
+      responses:
+        '200':
+          description: Perfil actualizado.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
   /v1/platform/tenants:
     get:
       tags: [platform]

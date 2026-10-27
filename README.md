@@ -33,7 +33,7 @@ nginx/     Configuración de Nginx del gateway (VM1) para producción, QA y Graf
 |---|---|---|---|---|
 |ServiceRequest|1.9.0|ServiceRequest|Mobile (cliente y técnico) y panel web (administradores)|[service-request.v1.yaml](openapi/service-request.v1.yaml)|
 |Catalog|1.3.0|Catalog|Mobile, panel Angular|[catalog.v1.yaml](openapi/catalog.v1.yaml)|
-|Identity|1.8.0|Identity|Mobile, panel Angular|[identity.v1.yaml](openapi/identity.v1.yaml)|
+|Identity|1.9.0|Identity|Mobile, panel Angular|[identity.v1.yaml](openapi/identity.v1.yaml)|
 |Matching|1.1.0|Matching|Mobile (técnico)|[matching.v1.yaml](openapi/matching.v1.yaml)|
 |Communication (buzón de notificaciones, ADR-024, y chat de la solicitud, ADR-026)|1.3.0|Communication|Mobile|[communication.v1.yaml](openapi/communication.v1.yaml)|
 |Payments (pago de la solicitud con la pasarela simulada, ADR-009, y su comprobante)|1.1.0|Payments|Mobile (cliente y empresa) y administrador del tenant|[payments.v1.yaml](openapi/payments.v1.yaml)|
