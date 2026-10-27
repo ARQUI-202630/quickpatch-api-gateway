@@ -59,6 +59,12 @@ info:
     `companyId`, `siteName` y `description`, con lo que el panel distingue las solicitudes de empresa. Las acciones
     sobre la solicitud (cancelar, responder la cotización, calificar) siguen siendo de quien la creó.
 
+    **1.10.0** (compatible): calificación de servicios completados (RF-16, SCRUM-497). Cliente dueño califica
+    con `POST /v1/service-requests/{id}/rating`, con `score` (1-5, requerido) y `comment` opcional (máximo 500 chars).
+    Responde con `serviceRequestId`, `score`, `comment`, `ratedAt`. TechnicianServiceRequest ahora incluye `score` y
+    `ratedAt` opcionales cuando la solicitud completada fue calificada (SCRUM-499). Produce eventos `service-request.rated`
+    (consumido por Ranking para actualizar reputación) y `service-request.status-changed`.
+
     - **Proveedor:** ServiceRequest Service.
     - **Consumidores:** app móvil (cliente y técnico), panel web (administradores, desde 1.4.0) y API Gateway.
     - El tenant, el cliente y la empresa se toman de los claims del JWT (`tenant_id`, `sub`, `company_id`); nunca del
@@ -1338,7 +1344,7 @@ components:
           nullable: true
     TechnicianServiceRequest:
       type: object
-      description: Solicitud en la lista del técnico, sin dirección, ubicación ni cliente (RN-SR13). Desde 1.2.0.
+      description: Solicitud en la lista del técnico, sin dirección, ubicación ni cliente (RN-SR13). Desde 1.2.0. **Desde 1.10.0** incluye `score` y `ratedAt` si la solicitud completada fue calificada (RF-16, SCRUM-499).
       required: [id, status, categoryId, description, createdAt, assignedAt]
       properties:
         id:
@@ -1357,6 +1363,17 @@ components:
         assignedAt:
           type: string
           format: date-time
+        score:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 5
+          description: Calificación otorgada por el cliente (1-5); null si no ha sido calificada.
+        ratedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp de cuándo el cliente calificó la solicitud; null si no ha sido calificada.
     TechnicianServiceRequestPage:
       type: object
       required: [items, page, size, totalItems]
