@@ -1,10 +1,13 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Identity API
-  version: 1.8.0
+  version: 1.9.0
   description: |
     Contrato REST de Identity Service (DD, sección 8.2.1): registro de clientes y de técnicos o
     proveedores, inicio de sesión y perfil del usuario autenticado.
+
+    **1.9.0** (compatible): edición del perfil propio (RF-XX, SCRUM-609, SCRUM-610): PATCH /v1/users/me
+    para actualizar fullName y phone.
 
     **1.1.0** (compatible): registro de técnico o proveedor, `verificationStatus` en el perfil y `403`
     por tenant inactivo en el registro.
@@ -322,6 +325,49 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+    patch:
+      tags: [users]
+      operationId: updateCurrentUser
+      summary: Actualizar el perfil propio
+      description: |
+        Actualiza nombre y teléfono del usuario del token (SCRUM-609). El backend modifica solo al usuario
+        autenticado, usando su tenant del JWT. No acepta id, email, role, tenant_id ni verificationStatus.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              minProperties: 1
+              properties:
+                fullName:
+                  type: string
+                  minLength: 2
+                  maxLength: 150
+                phone:
+                  type: string
+                  minLength: 7
+                  maxLength: 30
+                  nullable: true
+      responses:
+        '200':
+          description: Perfil actualizado.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
   /v1/platform/tenants:
     get:
       tags: [platform]
