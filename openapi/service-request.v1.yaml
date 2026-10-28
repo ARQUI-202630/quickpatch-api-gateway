@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — ServiceRequest API
-  version: 1.9.0
+  version: 1.10.0
   description: |
     Contrato REST de ServiceRequest Service (DD, sección 8.1).
 
@@ -58,6 +58,12 @@ info:
     `cliente` (sus solicitudes) y al `empresa_contacto` (las de su empresa), y sus elementos suman `clientType`,
     `companyId`, `siteName` y `description`, con lo que el panel distingue las solicitudes de empresa. Las acciones
     sobre la solicitud (cancelar, responder la cotización, calificar) siguen siendo de quien la creó.
+
+    **1.10.0** (compatible): calificación del servicio pagado (RF-12, ADR-027, SCRUM-497). Quien creó la solicitud
+    califica con `POST /v1/service-requests/{id}/rating`: `score` de 1 a 5 y `comment` opcional de hasta 500 caracteres.
+    Responde `serviceRequestId`, `score`, `comment` y `ratedAt`, y publica `service-request.rated` (sin el comentario),
+    que Ranking usa para la reputación del técnico. Calificar no cambia el estado de la solicitud. `TechnicianServiceRequest`
+    agrega `score` y `ratedAt` opcionales para el historial del técnico (SCRUM-499).
 
     - **Proveedor:** ServiceRequest Service.
     - **Consumidores:** app móvil (cliente y técnico), panel web (administradores, desde 1.4.0) y API Gateway.
@@ -884,6 +890,58 @@ paths:
           $ref: '#/components/responses/InvalidTransition'
         '422':
           $ref: '#/components/responses/EvidenceRequired'
+  /v1/service-requests/{id}/rating:
+    post:
+      tags: [service-requests]
+      operationId: rateServiceRequest
+      summary: Calificar el servicio pagado
+      description: |
+        Calificación del servicio (RF-12, DD 8.3.11, ADR-027). Desde 1.10.0.
+
+        - **Quién:** el `cliente` o `empresa_contacto` que creó la solicitud (el usuario del token). Otro usuario del
+          mismo tenant responde `403`; una solicitud de otro tenant, `404` (RLS). Otro rol responde `403`.
+        - **Cuándo:** solo en `pagado` (RN-R3) y una sola vez (RN-R2); si no, `409 transicion-invalida` o
+          `409 ya-calificada`.
+        - **Efectos:** guarda la calificación (`ratings`, DD 5.9) y publica `service-request.rated` por Outbox en la misma
+          transacción, sin el comentario. No cambia el estado de la solicitud ni depende de Ranking.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/ServiceRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RatingRequest'
+      responses:
+        '201':
+          description: Servicio calificado.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RatingResponse'
+              example:
+                serviceRequestId: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+                score: 5
+                comment: Excelente trabajo.
+                ratedAt: '2026-10-03T18:30:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Transición inválida (`problems/transicion-invalida`) o ya calificada (`problems/ya-calificada`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
   /v1/technicians/me/service-requests:
     get:
       tags: [technicians]
@@ -1286,7 +1344,7 @@ components:
           nullable: true
     TechnicianServiceRequest:
       type: object
-      description: Solicitud en la lista del técnico, sin dirección, ubicación ni cliente (RN-SR13). Desde 1.2.0.
+      description: Solicitud en la lista del técnico, sin dirección, ubicación ni cliente (RN-SR13). Desde 1.2.0. **Desde 1.10.0** incluye `score` y `ratedAt` si la solicitud fue calificada (RF-12, RF-17, SCRUM-499).
       required: [id, status, categoryId, description, createdAt, assignedAt]
       properties:
         id:
@@ -1305,6 +1363,17 @@ components:
         assignedAt:
           type: string
           format: date-time
+        score:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 5
+          description: Calificación otorgada por el cliente (1-5); null si no ha sido calificada.
+        ratedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp de cuándo el cliente calificó la solicitud; null si no ha sido calificada.
     TechnicianServiceRequestPage:
       type: object
       required: [items, page, size, totalItems]
@@ -1586,6 +1655,45 @@ components:
         completedAt:
           type: string
           format: date-time
+    RatingRequest:
+      type: object
+      description: Calificación del servicio pagado (RF-12, RN-R1, SCRUM-497). Desde 1.10.0.
+      required: [score]
+      additionalProperties: false
+      properties:
+        score:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: Calificación de 1 a 5.
+        comment:
+          type: string
+          maxLength: 500
+          nullable: true
+          description: Comentario opcional sobre el servicio (máximo 500 caracteres).
+    RatingResponse:
+      type: object
+      description: Resultado de calificar un servicio (DD 8.3.12). Desde 1.10.0.
+      required: [serviceRequestId, score, ratedAt]
+      properties:
+        serviceRequestId:
+          type: string
+          format: uuid
+          description: ID de la solicitud calificada.
+        score:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: Calificación otorgada.
+        comment:
+          type: string
+          nullable: true
+          maxLength: 500
+          description: Comentario proporcionado (puede ser null si no se envió).
+        ratedAt:
+          type: string
+          format: date-time
+          description: Timestamp de cuándo se registró la calificación.
     UploadEvidence:
       type: object
       required: [file]
