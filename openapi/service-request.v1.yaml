@@ -59,11 +59,11 @@ info:
     `companyId`, `siteName` y `description`, con lo que el panel distingue las solicitudes de empresa. Las acciones
     sobre la solicitud (cancelar, responder la cotización, calificar) siguen siendo de quien la creó.
 
-    **1.10.0** (compatible): calificación de servicios completados (RF-16, SCRUM-497). Cliente dueño califica
-    con `POST /v1/service-requests/{id}/rating`, con `score` (1-5, requerido) y `comment` opcional (máximo 500 chars).
-    Responde con `serviceRequestId`, `score`, `comment`, `ratedAt`. TechnicianServiceRequest ahora incluye `score` y
-    `ratedAt` opcionales cuando la solicitud completada fue calificada (SCRUM-499). Produce eventos `service-request.rated`
-    (consumido por Ranking para actualizar reputación) y `service-request.status-changed`.
+    **1.10.0** (compatible): calificación del servicio pagado (RF-12, ADR-027, SCRUM-497). Quien creó la solicitud
+    califica con `POST /v1/service-requests/{id}/rating`: `score` de 1 a 5 y `comment` opcional de hasta 500 caracteres.
+    Responde `serviceRequestId`, `score`, `comment` y `ratedAt`, y publica `service-request.rated` (sin el comentario),
+    que Ranking usa para la reputación del técnico. Calificar no cambia el estado de la solicitud. `TechnicianServiceRequest`
+    agrega `score` y `ratedAt` opcionales para el historial del técnico (SCRUM-499).
 
     - **Proveedor:** ServiceRequest Service.
     - **Consumidores:** app móvil (cliente y técnico), panel web (administradores, desde 1.4.0) y API Gateway.
@@ -894,16 +894,16 @@ paths:
     post:
       tags: [service-requests]
       operationId: rateServiceRequest
-      summary: Calificar un servicio completado
+      summary: Calificar el servicio pagado
       description: |
-        Cliente califica un servicio completado (RF-16, SCRUM-497). Solo el cliente dueño. Desde 1.10.0.
+        Calificación del servicio (RF-12, DD 8.3.11, ADR-027). Desde 1.10.0.
 
-        - **Quién:** solo el cliente dueño de la solicitud. Otro cliente, o una solicitud de otro tenant,
-          responde `404`. Otro rol responde `403`.
-        - **Cuándo:** solo desde `completado` y no calificado aún; si no, `409 transicion-invalida` o
+        - **Quién:** el `cliente` o `empresa_contacto` que creó la solicitud (el usuario del token). Otro usuario del
+          mismo tenant responde `403`; una solicitud de otro tenant, `404` (RLS). Otro rol responde `403`.
+        - **Cuándo:** solo en `pagado` (RN-R3) y una sola vez (RN-R2); si no, `409 transicion-invalida` o
           `409 ya-calificada`.
-        - **Efectos:** guarda la calificación con `ratedAt`, publica `service-request.rated` (RN-SR15,
-          RN-SR16) para que Ranking actualice la reputación del técnico, y `service-request.status-changed`.
+        - **Efectos:** guarda la calificación (`ratings`, DD 5.9) y publica `service-request.rated` por Outbox en la misma
+          transacción, sin el comentario. No cambia el estado de la solicitud ni depende de Ranking.
       parameters:
         - $ref: '#/components/parameters/CorrelationId'
         - $ref: '#/components/parameters/ServiceRequestId'
@@ -1344,7 +1344,7 @@ components:
           nullable: true
     TechnicianServiceRequest:
       type: object
-      description: Solicitud en la lista del técnico, sin dirección, ubicación ni cliente (RN-SR13). Desde 1.2.0. **Desde 1.10.0** incluye `score` y `ratedAt` si la solicitud completada fue calificada (RF-16, SCRUM-499).
+      description: Solicitud en la lista del técnico, sin dirección, ubicación ni cliente (RN-SR13). Desde 1.2.0. **Desde 1.10.0** incluye `score` y `ratedAt` si la solicitud fue calificada (RF-12, RF-17, SCRUM-499).
       required: [id, status, categoryId, description, createdAt, assignedAt]
       properties:
         id:
@@ -1657,7 +1657,7 @@ components:
           format: date-time
     RatingRequest:
       type: object
-      description: Solicitud para calificar un servicio completado (RF-16, SCRUM-497). Desde 1.10.0.
+      description: Calificación del servicio pagado (RF-12, RN-R1, SCRUM-497). Desde 1.10.0.
       required: [score]
       additionalProperties: false
       properties:
