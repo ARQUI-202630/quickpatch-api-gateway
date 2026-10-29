@@ -12,12 +12,15 @@ info:
     comprobante de pago **sin validez fiscal**, rotulado como tal: la factura electrónica validada por la DIAN queda
     fuera del MVP (SRS, contradicción P3, opción a; SAD, killer K14).
 
-    **1.2.0 (compatible):** técnico lista sus pagos recibidos (`GET /v1/payments/received?page=&size=`, RF-25, SCRUM-500).
+    **1.2.0 (compatible):** pagos recibidos (`GET /v1/payments/received`, RF-25, SCRUM-45 y SCRUM-500): el `tecnico`
+    ve los de sus servicios y el `proveedor` los de los técnicos de su equipo. Para saber el equipo, Payments guarda
+    el `providerId` que trae `technician.registered` (P-02); no consulta a Identity.
 
     - **Proveedor:** Payments Service. Las rutas empiezan por `/v1/service-requests/{id}` porque nombran la
       solicitud que se paga, pero las atiende Payments: en k3s las enruta un `IngressRoute` de Traefik por el sufijo
       `/payment` (DD 8.2.5).
-    - **Consumidores:** app móvil Flutter (cliente y usuarios de la empresa cliente). El comprobante también lo
+    - **Consumidores:** app móvil Flutter (cliente y usuarios de la empresa cliente; desde 1.2.0 también el técnico y
+      el proveedor, con los pagos recibidos). El comprobante también lo
       puede consultar el `admin_tenant` del tenant (DD 8.2.5); su ruta `/v1/payments` la enruta el mismo
       `IngressRoute` de Payments.
     - **Pasarela:** en el MVP es simulada (ADR-009, modificación del 20 de octubre de 2026). La app cambia la tarjeta
@@ -280,17 +283,35 @@ paths:
     get:
       tags: [payments]
       operationId: listReceivedPayments
-      summary: Listar pagos recibidos por el técnico
+      summary: Listar los pagos recibidos del técnico o del equipo del proveedor
       description: |
-        Técnico lista los pagos aprobados de sus servicios completados (RF-25, SCRUM-500). Solo el rol `tecnico`.
-        Desde 1.2.0.
+        Pagos de los servicios completados que prestó el técnico (RF-25, SCRUM-45). Desde 1.2.0.
 
-        - **Quién:** solo el técnico autenticado. El cliente, el admin y otros roles responden `403`.
-        - **Qué:** solo pagos con `status = aprobado` en los servicios completados del técnico.
-        - **Orden:** más reciente a más antigua (por `approvedAt`).
-        - **Índice:** (DD 5.13) índice compuesto sobre `technician_id, status` para esta consulta.
+        - **Quién:** el `tecnico` ve los pagos donde `technician_id` es el usuario del token. El `proveedor` ve los de
+          los técnicos de su equipo (`provider_id` = usuario del token, P-02) y puede filtrar uno con `technicianId`;
+          un técnico que no es de su equipo devuelve la lista vacía. Otro rol responde `403`.
+        - **Tenant:** sale del token (RLS). Un técnico de otro tenant ve la lista vacía.
+        - **Qué:** el pago vigente de cada solicitud: `pendiente` o `procesando` (por cobrar) y `aprobado`. Los
+          `rechazado` no aparecen: el reintento crea un pago nuevo (RN-P4).
+        - **Sin datos de tarjeta:** ni PAN, ni CVV, ni el token de la pasarela (RN-P1).
+        - **Orden:** el más reciente primero, por `createdAt`.
+        - **Índice:** compuesto sobre `technician_id, status` (DD 5.12).
       parameters:
         - $ref: '#/components/parameters/CorrelationId'
+        - name: technicianId
+          in: query
+          required: false
+          description: Solo para el `proveedor`; un técnico de su equipo. El `tecnico` no lo usa (`400` si lo envía).
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          required: false
+          description: Filtra por estado; sin él trae todos los de la lista.
+          schema:
+            type: string
+            enum: [pendiente, procesando, aprobado]
         - name: page
           in: query
           required: false
@@ -310,7 +331,7 @@ paths:
             default: 20
       responses:
         '200':
-          description: Pagos recibidos del técnico.
+          description: Pagos del técnico o del equipo del proveedor.
           headers:
             X-Correlation-Id:
               $ref: '#/components/headers/CorrelationId'
@@ -320,15 +341,25 @@ paths:
                 $ref: '#/components/schemas/ReceivedPaymentPage'
               example:
                 items:
-                  - id: a1b2c3d4-e5f6-47g8-h9i0-j1k2l3m4n5o6
+                  - id: 3f2b8c1e-6d4a-4f7b-9e21-5a8c0d7e4b19
                     serviceRequestId: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+                    technicianId: 9b1d4c2e-7f3a-4e8b-a5c6-2d0e1f3a4b5c
                     amount: '125000.00'
                     currency: COP
                     status: aprobado
+                    createdAt: '2026-10-20T14:10:00Z'
                     approvedAt: '2026-10-20T14:30:00Z'
+                  - id: 5e8a1b2c-3d4f-4a6b-8c9d-0e1f2a3b4c5d
+                    serviceRequestId: 1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5e
+                    technicianId: 9b1d4c2e-7f3a-4e8b-a5c6-2d0e1f3a4b5c
+                    amount: '80000.00'
+                    currency: COP
+                    status: pendiente
+                    createdAt: '2026-10-21T09:00:00Z'
+                    approvedAt: null
                 page: 1
                 size: 20
-                totalItems: 15
+                totalItems: 2
         '400':
           $ref: '#/components/responses/ValidationError'
         '401':
@@ -495,8 +526,8 @@ components:
           description: Siempre `false` en el MVP; el comprobante no es una factura electrónica (SRS P3).
     ReceivedPayment:
       type: object
-      description: Pago aprobado de un servicio completado (DD 5.13, RF-25). Desde 1.2.0.
-      required: [id, serviceRequestId, amount, currency, status, approvedAt]
+      description: Pago de un servicio completado, sin datos de tarjeta (DD 5.12, RF-25). Desde 1.2.0.
+      required: [id, serviceRequestId, technicianId, amount, currency, status, createdAt, approvedAt]
       properties:
         id:
           type: string
@@ -506,6 +537,10 @@ components:
           type: string
           format: uuid
           description: Solicitud de servicio para la que se registró el pago.
+        technicianId:
+          type: string
+          format: uuid
+          description: Técnico que prestó el servicio; el proveedor lo usa para saber de quién es cada pago.
         amount:
           type: string
           pattern: '^[0-9]+\.[0-9]{2}$'
@@ -516,12 +551,17 @@ components:
           description: Moneda del pago.
         status:
           type: string
-          enum: [aprobado]
-          description: Estado del pago. En esta lista solo aparecen pagos aprobados.
+          enum: [pendiente, procesando, aprobado]
+          description: Estado del pago. Los rechazados no aparecen.
+        createdAt:
+          type: string
+          format: date-time
+          description: Cuándo se creó el pago (al completarse el servicio, RN-P4).
         approvedAt:
           type: string
           format: date-time
-          description: Timestamp de cuándo el pago fue aprobado por el gateway.
+          nullable: true
+          description: Cuándo lo aprobó la pasarela; nulo mientras no esté `aprobado`.
     ReceivedPaymentPage:
       type: object
       description: Página de pagos recibidos (DD 8.1). Desde 1.2.0.
