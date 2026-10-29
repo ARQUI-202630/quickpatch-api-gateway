@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Identity API
-  version: 1.9.0
+  version: 1.10.0
   description: |
     Contrato REST de Identity Service (DD, sección 8.2.1): registro de clientes y de técnicos o
     proveedores, inicio de sesión y perfil del usuario autenticado.
@@ -39,6 +39,12 @@ info:
     **1.9.0** (compatible): edición del perfil propio (SCRUM-609 y SCRUM-610, retroalimentación del Sprint 4):
     `PATCH /v1/users/me` actualiza `fullName` y `phone` del usuario del token. El correo, el rol, el tenant y el
     estado de verificación no se editan.
+
+    **1.10.0** (compatible): recuperación de contraseña olvidada (SCRUM-624, ADR-024). Usuario solicita
+    con `POST /v1/auth/password-recovery/request` (correo, responde 202 aunque no exista la cuenta);
+    recibe enlace seguro por correo (72h); confirma con `POST /v1/auth/password-recovery/{token}/confirm`
+    (nueva contraseña). Invalida todas las sesiones anteriores. No implementa envío de correo (ADR-024);
+    Identity responde que lo envió, el backend real lo maneja fuera del MVP.
 
     - **Proveedor:** Identity Service.
     - **Consumidores:** app móvil Flutter, panel Angular y API Gateway.
@@ -301,6 +307,125 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '403':
           $ref: '#/components/responses/TenantDisabled'
+        '503':
+          $ref: '#/components/responses/ChannelWithoutTenant'
+  /v1/auth/password-recovery/request:
+    post:
+      tags: [auth]
+      operationId: requestPasswordRecovery
+      summary: Solicitar recuperación de contraseña
+      description: |
+        Usuario solicita recuperar su contraseña con su correo (SCRUM-624, ADR-024). Responde igual
+        exista o no la cuenta, para no revelar cuentas existentes. Envía un enlace seguro por correo
+        con token de un solo uso y vencimiento (72 horas).
+
+        - **Quién:** cualquiera, sin autenticar (`security: []`).
+        - **Qué:** si la cuenta existe en el tenant del canal, la app genera un token de un solo uso y
+          **la respuesta dice que el correo fue enviado**, aunque el correo real depende del ADR-024.
+        - **Vencimiento:** 72 horas. Token usado, vencido, anulado o de otro tenant responden igual
+          (`400 enlace-invalido` en la confirmación), para no revelar cuál fue el caso.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              additionalProperties: false
+              properties:
+                email:
+                  type: string
+                  format: email
+                  maxLength: 150
+      responses:
+        '202':
+          description: |
+            Solicitud aceptada. Correo enviado si la cuenta existe. Responde igual aunque la cuenta
+            no exista, para no revelar usuarios registrados.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          description: |
+            Demasiados intentos. Límite de solicitudes excedido (RN-U6, anti-spam). La cuenta queda
+            bloqueada para recuperación 1 hora.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/ChannelWithoutTenant'
+  /v1/auth/password-recovery/{token}/confirm:
+    post:
+      tags: [auth]
+      operationId: confirmPasswordRecovery
+      summary: Confirmar nueva contraseña
+      description: |
+        Usuario confirma el cambio con el token del correo y su nueva contraseña (SCRUM-624, ADR-024).
+        Invalida todas las sesiones anteriores. Token tiene vencimiento.
+
+        - **Quién:** cualquiera con el token válido, sin autenticar.
+        - **Token:** de un solo uso. Usado, vencido, anulado o de otro tenant responden igual
+          (`400 enlace-invalido`), para no revelar cuál fue el caso.
+        - **Efecto:** actualiza la contraseña y publica `user.password-changed` (eventos EDR-024).
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Token de un solo uso del correo.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [newPassword]
+              additionalProperties: false
+              properties:
+                newPassword:
+                  type: string
+                  format: password
+                  minLength: 8
+                  maxLength: 128
+      responses:
+        '200':
+          description: Contraseña actualizada. Sesiones anteriores invalidadas.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        '400':
+          description: |
+            Contraseña no válida (`problems/validacion`, en `errors.password`) o token inválido, expirado
+            o ya usado (`problems/enlace-invalido`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
         '503':
           $ref: '#/components/responses/ChannelWithoutTenant'
   /v1/users/me:
