@@ -40,11 +40,13 @@ info:
     `PATCH /v1/users/me` actualiza `fullName` y `phone` del usuario del token. El correo, el rol, el tenant y el
     estado de verificación no se editan.
 
-    **1.10.0** (compatible): recuperación de contraseña olvidada (SCRUM-624, ADR-024). Usuario solicita
-    con `POST /v1/auth/password-recovery/request` (correo, responde 202 aunque no exista la cuenta);
-    recibe enlace seguro por correo (72h); confirma con `POST /v1/auth/password-recovery/{token}/confirm`
-    (nueva contraseña). Invalida todas las sesiones anteriores. No implementa envío de correo (ADR-024);
-    Identity responde que lo envió, el backend real lo maneja fuera del MVP.
+    **1.10.0** (compatible): recuperación de la contraseña olvidada (SCRUM-623 y SCRUM-624). El correo sigue fuera
+    del MVP (ADR-024), así que el enlace lo entrega el administrador del tenant, con el mismo mecanismo de la
+    invitación de la 1.7.0: el usuario lo pide con su correo (`POST /v1/auth/password-recovery`), el `admin_tenant`
+    ve las solicitudes pendientes (`GET /v1/admin/password-recovery-requests`), genera un enlace de un solo uso que
+    vence en **1 hora** (`POST /v1/admin/password-recovery-requests/{id}/link`) y se lo hace llegar al usuario por el
+    medio que use con él, después de confirmar que es quien lo pidió. El usuario define la contraseña nueva con
+    `POST /v1/auth/password-recovery/confirm`.
 
     - **Proveedor:** Identity Service.
     - **Consumidores:** app móvil Flutter, panel Angular y API Gateway.
@@ -76,6 +78,8 @@ tags:
     description: Equipo de técnicos del proveedor, solo para `proveedor` y sobre su propio equipo (RN-TP4).
   - name: companies
     description: Cuenta corporativa (empresa cliente), solo para `empresa_contacto` y sobre su propia empresa (RN-CC3).
+  - name: password-recovery-admin
+    description: Solicitudes de recuperación de contraseña de los usuarios del tenant, solo para `admin_tenant` (1.10.0).
 paths:
   /v1/auth/register/client:
     post:
@@ -309,21 +313,23 @@ paths:
           $ref: '#/components/responses/TenantDisabled'
         '503':
           $ref: '#/components/responses/ChannelWithoutTenant'
-  /v1/auth/password-recovery/request:
+  /v1/auth/password-recovery:
     post:
       tags: [auth]
       operationId: requestPasswordRecovery
-      summary: Solicitar recuperación de contraseña
+      summary: Pedir la recuperación de la contraseña
       description: |
-        Usuario solicita recuperar su contraseña con su correo (SCRUM-624, ADR-024). Responde igual
-        exista o no la cuenta, para no revelar cuentas existentes. Envía un enlace seguro por correo
-        con token de un solo uso y vencimiento (72 horas).
+        El usuario que olvidó su contraseña la pide con su correo (SCRUM-623). El tenant sale del canal
+        (`X-Channel-Id`, RN-U5), igual que en el login. Desde 1.10.0.
 
-        - **Quién:** cualquiera, sin autenticar (`security: []`).
-        - **Qué:** si la cuenta existe en el tenant del canal, la app genera un token de un solo uso y
-          **la respuesta dice que el correo fue enviado**, aunque el correo real depende del ADR-024.
-        - **Vencimiento:** 72 horas. Token usado, vencido, anulado o de otro tenant responden igual
-          (`400 enlace-invalido` en la confirmación), para no revelar cuál fue el caso.
+        - **Misma respuesta siempre:** `202` exista o no la cuenta, para no revelar quién está registrado.
+        - **Qué registra:** si la cuenta existe, está activa y no es `admin_tenant` ni `admin_plataforma`, deja una
+          solicitud `pendiente` para el `admin_tenant` del tenant. Si ya tenía una pendiente, no crea otra: actualiza
+          su fecha. No genera ningún token: el enlace lo genera el administrador.
+        - **Límite:** 3 solicitudes por correo por hora, cuente o no con una cuenta; la cuarta responde `429` con
+          `Retry-After`. El límite es por correo y no por cuenta para que tampoco revele quién está registrado.
+        - **Administradores:** la contraseña de un `admin_tenant` la recupera el `admin_plataforma`, fuera de este
+          flujo.
       security: []
       parameters:
         - $ref: '#/components/parameters/ChannelId'
@@ -333,99 +339,75 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [email]
-              additionalProperties: false
-              properties:
-                email:
-                  type: string
-                  format: email
-                  maxLength: 150
+              $ref: '#/components/schemas/PasswordRecoveryRequest'
       responses:
         '202':
-          description: |
-            Solicitud aceptada. Correo enviado si la cuenta existe. Responde igual aunque la cuenta
-            no exista, para no revelar usuarios registrados.
+          description: Solicitud recibida. El cuerpo es el mismo exista o no la cuenta.
           headers:
             X-Correlation-Id:
               $ref: '#/components/headers/CorrelationId'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
         '400':
           $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/TenantDisabled'
         '429':
-          description: |
-            Demasiados intentos. Límite de solicitudes excedido (RN-U6, anti-spam). La cuenta queda
-            bloqueada para recuperación 1 hora.
+          description: Más de 3 solicitudes para el mismo correo en una hora (`problems/demasiadas-solicitudes`).
+          headers:
+            Retry-After:
+              description: Segundos que faltan para poder pedirla otra vez.
+              schema:
+                type: integer
           content:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
         '503':
           $ref: '#/components/responses/ChannelWithoutTenant'
-  /v1/auth/password-recovery/{token}/confirm:
+  /v1/auth/password-recovery/confirm:
     post:
       tags: [auth]
       operationId: confirmPasswordRecovery
-      summary: Confirmar nueva contraseña
+      summary: Definir la contraseña nueva con el enlace de recuperación
       description: |
-        Usuario confirma el cambio con el token del correo y su nueva contraseña (SCRUM-624, ADR-024).
-        Invalida todas las sesiones anteriores. Token tiene vencimiento.
+        El usuario define su contraseña nueva con el token del enlace que le entregó el administrador. El tenant sale
+        del canal (`X-Channel-Id`, RN-U5). Desde 1.10.0.
 
-        - **Quién:** cualquiera con el token válido, sin autenticar.
-        - **Token:** de un solo uso. Usado, vencido, anulado o de otro tenant responden igual
-          (`400 enlace-invalido`), para no revelar cuál fue el caso.
-        - **Efecto:** actualiza la contraseña y publica `user.password-changed` (eventos EDR-024).
+        - **Token:** de un solo uso, vence a la hora. Usado, vencido, anulado o de otro tenant responde igual
+          (`400 enlace-invalido`), para no revelar cuál fue el caso. Va en el cuerpo, no en la ruta, para que no
+          quede en los registros del Gateway.
+        - **Contraseña:** misma política del registro (RF-01, mínimo 8 caracteres).
+        - **Efecto:** guarda el hash nuevo, cierra la solicitud, anula los demás enlaces de recuperación del usuario y
+          desbloquea la cuenta si estaba bloqueada por intentos fallidos (RN-U4). No inicia sesión: después el
+          usuario entra con `POST /v1/auth/login`.
+        - **Sesiones abiertas:** el login rechaza la contraseña anterior desde ese momento, pero los tokens ya
+          emitidos siguen sirviendo hasta que vencen (`expiresIn`), porque los servicios validan el JWT con la llave
+          pública sin consultar a Identity (ADR-018). Es el mismo criterio de RN-T1 para un tenant desactivado.
       security: []
       parameters:
         - $ref: '#/components/parameters/ChannelId'
         - $ref: '#/components/parameters/CorrelationId'
-        - name: token
-          in: path
-          required: true
-          schema:
-            type: string
-          description: Token de un solo uso del correo.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [newPassword]
-              additionalProperties: false
-              properties:
-                newPassword:
-                  type: string
-                  format: password
-                  minLength: 8
-                  maxLength: 128
+              $ref: '#/components/schemas/PasswordSetupRequest'
       responses:
-        '200':
-          description: Contraseña actualizada. Sesiones anteriores invalidadas.
+        '204':
+          description: Contraseña nueva guardada.
           headers:
             X-Correlation-Id:
               $ref: '#/components/headers/CorrelationId'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
         '400':
           description: |
-            Contraseña no válida (`problems/validacion`, en `errors.password`) o token inválido, expirado
-            o ya usado (`problems/enlace-invalido`).
+            La contraseña no cumple la política (`problems/validacion`, en `errors.password`) o el enlace no es
+            válido (`problems/enlace-invalido`).
           content:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '403':
+          $ref: '#/components/responses/TenantDisabled'
         '503':
           $ref: '#/components/responses/ChannelWithoutTenant'
   /v1/users/me:
@@ -762,6 +744,103 @@ paths:
           $ref: '#/components/responses/TechnicianNotFound'
         '409':
           $ref: '#/components/responses/InvalidTransition'
+  /v1/admin/password-recovery-requests:
+    get:
+      tags: [password-recovery-admin]
+      operationId: listPasswordRecoveryRequests
+      summary: Listar las solicitudes de recuperación pendientes del tenant
+      description: |
+        Solicitudes `pendiente` de los usuarios del tenant del token, de la más antigua a la más reciente. Solo
+        `admin_tenant`; nunca devuelve usuarios de otro tenant (RLS). Desde 1.10.0.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: page
+          in: query
+          required: false
+          description: Página, desde 1 (DD 8.1).
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: size
+          in: query
+          required: false
+          description: Elementos por página, máximo 100 (DD 8.1).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Solicitudes pendientes.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasswordRecoveryRequestPage'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/admin/password-recovery-requests/{id}/link:
+    post:
+      tags: [password-recovery-admin]
+      operationId: createPasswordRecoveryLink
+      summary: Generar el enlace de recuperación de una solicitud
+      description: |
+        Genera un enlace de un solo uso que vence en 1 hora y anula los enlaces de recuperación anteriores del
+        usuario que no se hayan usado. Solo `admin_tenant` y sobre solicitudes de su tenant: una de otro tenant
+        responde `404`. El enlace solo se muestra en esta respuesta (Identity guarda el hash del token); el
+        administrador lo entrega al usuario después de confirmar que es quien lo pidió. Puede volver a generarlo
+        mientras la solicitud siga pendiente. Queda en `audit_logs`. Desde 1.10.0.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: id
+          in: path
+          required: true
+          description: Identificador de la solicitud de recuperación.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '201':
+          description: Enlace nuevo, con el mismo formato de la invitación.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invitation'
+              example:
+                link: https://quickpatch.internal/recuperar#token=Rk3pX2q9ZbT7vW1sYc8nLm4dHa6uJe0oQi5gNt-yUfB
+                token: Rk3pX2q9ZbT7vW1sYc8nLm4dHa6uJe0oQi5gNt-yUfB
+                expiresAt: '2026-10-29T15:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: La solicitud no existe en el tenant del administrador (`problems/no-encontrado`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: La solicitud ya se cerró porque el usuario definió su contraseña (`problems/transicion-invalida`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
   /v1/providers/me/technicians:
     post:
       tags: [provider-team]
@@ -1562,6 +1641,51 @@ components:
           properties:
             invitation:
               $ref: '#/components/schemas/Invitation'
+    PasswordRecoveryRequest:
+      type: object
+      required: [email]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 150
+    PasswordRecoveryPending:
+      type: object
+      description: Solicitud de recuperación pendiente. No lleva ningún token.
+      required: [id, userId, email, fullName, role, requestedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        fullName:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+        requestedAt:
+          type: string
+          format: date-time
+          description: Última vez que el usuario la pidió.
+    PasswordRecoveryRequestPage:
+      type: object
+      required: [items, page, size, totalItems]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PasswordRecoveryPending'
+        page:
+          type: integer
+        size:
+          type: integer
+        totalItems:
+          type: integer
     PasswordSetupRequest:
       type: object
       required: [token, password]
@@ -1569,7 +1693,7 @@ components:
         token:
           type: string
           maxLength: 100
-          description: Token de la invitación.
+          description: Token de la invitación o, desde 1.10.0, del enlace de recuperación.
         password:
           type: string
           format: password
