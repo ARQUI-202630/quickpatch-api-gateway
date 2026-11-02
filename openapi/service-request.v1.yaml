@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — ServiceRequest API
-  version: 1.10.0
+  version: 1.11.0
   description: |
     Contrato REST de ServiceRequest Service (DD, sección 8.1).
 
@@ -64,6 +64,14 @@ info:
     Responde `serviceRequestId`, `score`, `comment` y `ratedAt`, y publica `service-request.rated` (sin el comentario),
     que Ranking usa para la reputación del técnico. Calificar no cambia el estado de la solicitud. `TechnicianServiceRequest`
     agrega `score` y `ratedAt` opcionales para el historial del técnico (SCRUM-499).
+
+    **1.11.0** (compatible): un tenant desactivado no crea solicitudes (RN-T1, SCRUM-348 y SCRUM-510).
+    `POST /v1/service-requests` responde `422 tenant-inactivo` (detalle `tenant is disabled`) cuando el tenant del
+    token está inactivo, **aunque el token siga vigente**. ServiceRequest lo sabe por una réplica local del estado del
+    tenant que alimenta `tenant.status-changed` (ADR-017), sin consultar a Identity (ADR-003), así que el rechazo
+    llega en segundos y no cuando vence el token (60 minutos). Al reactivar el tenant vuelve a crear. Es una
+    respuesta nueva de una operación existente: no cambia el cuerpo, los campos ni los códigos que ya recibía quien
+    usa un tenant activo.
 
     - **Proveedor:** ServiceRequest Service.
     - **Consumidores:** app móvil (cliente y técnico), panel web (administradores, desde 1.4.0) y API Gateway.
@@ -178,7 +186,9 @@ paths:
         `company_id` (RN-SR12). La solicitud de empresa sigue el mismo flujo de matching que la de hogar.
 
         Reglas: la categoría debe existir y estar activa en el tenant del usuario (RN-SR10) y la
-        ubicación debe estar dentro del área de cobertura de Bogotá D.C. (RN-SR1, RN-SR9).
+        ubicación debe estar dentro del área de cobertura de Bogotá D.C. (RN-SR1, RN-SR9). Desde 1.11.0, el tenant del
+        usuario debe estar activo (RN-T1): si lo desactivó el administrador de la plataforma responde
+        `422 tenant-inactivo` aunque el token siga vigente, y no se crea nada.
 
         **Ubicación (1.3.0, ADR-024).** Las coordenadas del GPS son la primera opción: si llega `location`,
         se usa tal cual y `addressText` solo complementa. Si no llega, ServiceRequest geocodifica
@@ -1865,9 +1875,10 @@ components:
     BusinessRuleViolation:
       description: |
         Los datos son válidos pero violan una regla de negocio:
-        `categoria-no-disponible` (RN-SR10), `ubicacion-fuera-de-cobertura` (RN-SR9) o, desde 1.3.0,
+        `categoria-no-disponible` (RN-SR10), `ubicacion-fuera-de-cobertura` (RN-SR9), desde 1.3.0,
         `direccion-no-encontrada` (la solicitud llegó sin `location` y la dirección no se pudo
-        geocodificar dentro de Bogotá, ADR-024).
+        geocodificar dentro de Bogotá, ADR-024) o, desde 1.11.0, `tenant-inactivo` (el tenant del token fue
+        desactivado, RN-T1).
       content:
         application/problem+json:
           schema:
@@ -1885,3 +1896,10 @@ components:
                 title: No encontramos la dirección
                 status: 422
                 detail: Comparte tu ubicación para crear la solicitud.
+            tenantInactivo:
+              summary: El tenant fue desactivado (1.11.0, RN-T1)
+              value:
+                type: https://quickpatch.internal/problems/tenant-inactivo
+                title: El tenant está inactivo
+                status: 422
+                detail: tenant is disabled
