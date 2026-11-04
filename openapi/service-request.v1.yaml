@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — ServiceRequest API
-  version: 1.11.0
+  version: 1.12.0
   description: |
     Contrato REST de ServiceRequest Service (DD, sección 8.1).
 
@@ -72,6 +72,13 @@ info:
     llega en segundos y no cuando vence el token (60 minutos). Al reactivar el tenant vuelve a crear. Es una
     respuesta nueva de una operación existente: no cambia el cuerpo, los campos ni los códigos que ya recibía quien
     usa un tenant activo.
+
+    **1.12.0** (compatible): calificación en el detalle de la solicitud (RF-12, SCRUM-32, SCRUM-637).
+    `GET /v1/service-requests/{id}` agrega `rating` (`score`, `comment` y `ratedAt`), opcional y `null` mientras la
+    solicitud no se califique, para que la app sepa al volver a abrir el detalle si ya la calificó (SCRUM-86). No
+    agrega campos obligatorios ni cambia quién ve el detalle: la calificación solo existe en `pagado` (RN-R3), así
+    que la reciben el cliente dueño y, en una solicitud de empresa, los `empresa_contacto` de la empresa; el técnico
+    asignado no consulta el detalle fuera de `asignado`–`completado` (RN-SR13).
 
     - **Proveedor:** ServiceRequest Service.
     - **Consumidores:** app móvil (cliente y técnico), panel web (administradores, desde 1.4.0) y API Gateway.
@@ -415,6 +422,10 @@ paths:
 
         Los nombres y el teléfono se obtienen de Identity; si Identity no responde, `technician` y `client`
         llegan con `fullName` y `phone` en `null`.
+
+        **Calificación** (1.12.0): `rating` trae la calificación de la solicitud (`score`, `comment` y
+        `ratedAt`) o `null` si todavía no se calificó. Como solo se califica en `pagado` (RN-R3), la ven
+        quienes pueden ver el detalle en ese estado; las reglas de RN-SR13 no cambian.
       parameters:
         - $ref: '#/components/parameters/CorrelationId'
         - name: id
@@ -1329,6 +1340,30 @@ components:
           type: string
           nullable: true
           description: Sede de la empresa; `null` si no se indicó o es de hogar. Desde 1.9.0.
+        rating:
+          allOf:
+            - $ref: '#/components/schemas/ServiceRequestRating'
+          nullable: true
+          description: Calificación de la solicitud; `null` mientras no se califique (RF-12, RN-R3). Desde 1.12.0.
+    ServiceRequestRating:
+      type: object
+      description: Calificación que el cliente dio al servicio pagado, como se muestra en el detalle (SCRUM-637). Desde 1.12.0.
+      required: [score, ratedAt]
+      properties:
+        score:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: Calificación de 1 a 5 (RN-R1).
+        comment:
+          type: string
+          maxLength: 500
+          nullable: true
+          description: Comentario del cliente; `null` si no escribió uno.
+        ratedAt:
+          type: string
+          format: date-time
+          description: Momento en que se registró la calificación.
     AssignedTechnician:
       type: object
       required: [id, fullName]
