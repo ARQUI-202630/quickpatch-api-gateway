@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Identity API
-  version: 1.10.0
+  version: 1.11.0
   description: |
     Contrato REST de Identity Service (DD, sección 8.2.1): registro de clientes y de técnicos o
     proveedores, inicio de sesión y perfil del usuario autenticado.
@@ -47,6 +47,16 @@ info:
     vence en **1 hora** (`POST /v1/admin/password-recovery-requests/{id}/link`) y se lo hace llegar al usuario por el
     medio que use con él, después de confirmar que es quien lo pidió. El usuario define la contraseña nueva con
     `POST /v1/auth/password-recovery/confirm`.
+
+    **1.11.0** (compatible): la contraseña puede viajar cifrada (observación del profesor en la revisión del
+    Sprint 5). El cliente pide la llave pública con `GET /v1/auth/password-key`, cifra la contraseña con
+    RSA-OAEP-256 y la manda en `encryptedPassword` (`keyId` y `ciphertext` en base64url) en lugar de `password`,
+    en el registro de cliente, de técnico y de empresa, el login, `POST /v1/auth/password/setup` y
+    `POST /v1/auth/password-recovery/confirm`. Así no se lee en las herramientas del navegador ni en la red
+    interna, donde VM1 ya terminó el TLS. Va una de las dos, nunca ambas. Si la llave cambió (`keyId` distinto),
+    responde `400 problems/llave-desconocida` y el cliente pide la llave de nuevo. Identity descifra y aplica las
+    mismas reglas y el mismo BCrypt de antes; `password` en claro se sigue aceptando mientras un ambiente no
+    active `PasswordEncryption:RequireEncrypted`.
 
     - **Proveedor:** Identity Service.
     - **Consumidores:** app móvil Flutter, panel Angular y API Gateway.
@@ -274,6 +284,25 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '503':
           $ref: '#/components/responses/ChannelWithoutTenant'
+  /v1/auth/password-key:
+    get:
+      tags: [auth]
+      operationId: getPasswordKey
+      summary: Llave pública para cifrar la contraseña
+      description: |
+        Llave RSA con la que la app y el panel cifran la contraseña antes de enviarla (1.11.0). Es otra que la del
+        JWT y no depende del tenant. `keyId` es la huella de la llave: si cambia, las contraseñas cifradas con la
+        anterior responden `400 problems/llave-desconocida`.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Llave pública vigente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasswordKey'
   /v1/auth/password/setup:
     post:
       tags: [auth]
@@ -1207,7 +1236,10 @@ components:
       enum: [cliente, tecnico, proveedor, empresa_contacto, admin_tenant, admin_plataforma]
     RegisterClientRequest:
       type: object
-      required: [email, password, fullName]
+      required: [email, fullName]
+      oneOf:
+        - required: [password]
+        - required: [encryptedPassword]
       additionalProperties: false
       properties:
         email:
@@ -1219,6 +1251,8 @@ components:
           format: password
           minLength: 8
           maxLength: 128
+        encryptedPassword:
+          $ref: '#/components/schemas/EncryptedPassword'
         fullName:
           type: string
           minLength: 2
@@ -1229,7 +1263,10 @@ components:
           nullable: true
     RegisterTechnicianRequest:
       type: object
-      required: [email, password, fullName, phone, documentId, specialtyId, role]
+      required: [email, fullName, phone, documentId, specialtyId, role]
+      oneOf:
+        - required: [password]
+        - required: [encryptedPassword]
       additionalProperties: false
       properties:
         email:
@@ -1241,6 +1278,8 @@ components:
           format: password
           minLength: 8
           maxLength: 128
+        encryptedPassword:
+          $ref: '#/components/schemas/EncryptedPassword'
         fullName:
           type: string
           minLength: 2
@@ -1263,7 +1302,10 @@ components:
           enum: [tecnico, proveedor]
     LoginRequest:
       type: object
-      required: [email, password]
+      required: [email]
+      oneOf:
+        - required: [password]
+        - required: [encryptedPassword]
       additionalProperties: false
       properties:
         email:
@@ -1274,6 +1316,8 @@ components:
           type: string
           format: password
           maxLength: 128
+        encryptedPassword:
+          $ref: '#/components/schemas/EncryptedPassword'
     LoginResponse:
       type: object
       required: [accessToken, tokenType, expiresIn, user]
@@ -1688,7 +1732,10 @@ components:
           type: integer
     PasswordSetupRequest:
       type: object
-      required: [token, password]
+      required: [token]
+      oneOf:
+        - required: [password]
+        - required: [encryptedPassword]
       properties:
         token:
           type: string
@@ -1699,6 +1746,37 @@ components:
           format: password
           minLength: 8
           maxLength: 128
+        encryptedPassword:
+          $ref: '#/components/schemas/EncryptedPassword'
+    EncryptedPassword:
+      type: object
+      required: [keyId, ciphertext]
+      additionalProperties: false
+      description: |
+        Contraseña cifrada en el cliente (1.11.0): RSA-OAEP con SHA-256 sobre la contraseña en UTF-8, con la llave de
+        `GET /v1/auth/password-key`. Las reglas de largo de `password` se aplican después de descifrar.
+      properties:
+        keyId:
+          type: string
+          maxLength: 64
+          description: El `keyId` de la llave con que se cifró.
+        ciphertext:
+          type: string
+          maxLength: 700
+          description: Texto cifrado en base64url sin relleno.
+    PasswordKey:
+      type: object
+      required: [keyId, algorithm, publicKey]
+      properties:
+        keyId:
+          type: string
+          description: Huella de la llave (base64url de SHA-256 de la llave pública, 16 caracteres).
+        algorithm:
+          type: string
+          enum: [RSA-OAEP-256]
+        publicKey:
+          type: string
+          description: Llave pública RSA en SubjectPublicKeyInfo (DER) codificada en base64.
     Problem:
       type: object
       description: Detalle de error según RFC 9457.
@@ -1751,7 +1829,7 @@ components:
           schema:
             $ref: '#/components/schemas/Problem'
     ValidationError:
-      description: Datos de entrada inválidos (`problems/validacion`).
+      description: Datos de entrada inválidos (`problems/validacion`). Desde 1.11.0 también `problems/llave-desconocida`, si `encryptedPassword` usa una llave que ya no es la vigente.
       content:
         application/problem+json:
           schema:
