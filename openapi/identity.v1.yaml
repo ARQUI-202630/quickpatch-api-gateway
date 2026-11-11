@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: QUICKPATCH — Identity API
-  version: 1.11.0
+  version: 1.12.0
   description: |
     Contrato REST de Identity Service (DD, sección 8.2.1): registro de clientes y de técnicos o
     proveedores, inicio de sesión y perfil del usuario autenticado.
@@ -632,7 +632,9 @@ paths:
       description: |
         Devuelve los técnicos y proveedores del tenant del token, opcionalmente filtrados por estado de
         verificación, del más antiguo al más reciente (RF-19, SCRUM-39 criterio 1). Solo `admin_tenant`;
-        nunca devuelve técnicos de otro tenant (RLS, SCRUM-39 criterio 7).
+        nunca devuelve técnicos de otro tenant (RLS, SCRUM-39 criterio 7). Desde 1.12.0 cada técnico trae su
+        reputación (la publica Ranking, ADR-027) y se puede filtrar a los de reputación baja (AC9-E2, SCRUM-642).
+        La marca no suspende a nadie: la suspensión sigue siendo una acción del administrador.
       security:
         - bearerAuth: []
       parameters:
@@ -643,6 +645,14 @@ paths:
           description: Filtra por estado de verificación. Sin el parámetro devuelve todos.
           schema:
             $ref: '#/components/schemas/VerificationStatus'
+        - name: lowReputation
+          in: query
+          required: false
+          description: |
+            Con `true`, solo los técnicos con reputación baja: promedio menor a 3.0 con al menos 5 servicios
+            calificados (AC9-E2, SAD 3.9). Sin el parámetro, o con `false`, no filtra por reputación (1.12.0).
+          schema:
+            type: boolean
         - name: page
           in: query
           required: false
@@ -1441,6 +1451,21 @@ components:
         createdAt:
           type: string
           format: date-time
+        averageRating:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 5
+          nullable: true
+          description: Promedio de calificaciones con un decimal, según Ranking (ADR-027); `null` si no tiene calificaciones (1.12.0).
+        ratingCount:
+          type: integer
+          minimum: 0
+          description: Servicios calificados que cuenta el promedio (1.12.0).
+        lowReputation:
+          type: boolean
+          description: |
+            `true` si el promedio es menor a 3.0 con al menos 5 calificaciones (AC9-E2). Solo señala: no suspende (1.12.0).
     TechnicianPage:
       type: object
       required: [items, page, size, totalItems]
